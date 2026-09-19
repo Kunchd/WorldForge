@@ -1,4 +1,4 @@
-# WorldForge mobile chat
+# WorldForge
 
 An Android-first Expo/React Native chatbot with a small local Node.js proxy for OpenAI. The same app can run on iOS later without a rewrite.
 
