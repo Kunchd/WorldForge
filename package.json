@@ -1,0 +1,27 @@
+{
+  "name": "worldforge",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "dependencies": {
+    "expo": "~57.0.24",
+    "expo-status-bar": "~57.0.1",
+    "openai": "^7.20.0",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-safe-area-context": "~5.7.0"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.2",
+    "typescript": "~6.0.3"
+  },
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "server": "node --env-file-if-exists=.env.local server/index.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-test-isolation=none server/*.test.mjs"
+  },
+  "private": true
+}
