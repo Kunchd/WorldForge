@@ -1,9 +1,10 @@
-import { ChatMessage } from '../types/chat';
+import { NovelMessage } from '../types/novel';
 import { normalizeOpenAIApiKey } from './apiKey';
 
 const PROXY_API_URL = process.env.EXPO_PUBLIC_API_URL?.replace(/\/$/, '');
 const OPENAI_API_URL = 'https://api.openai.com/v1/responses';
 const OPENAI_MODEL = 'gpt-5-mini';
+const MAX_OUTPUT_TOKENS = 4_000;
 
 export type ChatTransport =
   | { type: 'proxy' }
@@ -15,6 +16,8 @@ type ProxyChatResponse = {
 };
 
 type OpenAIResponse = {
+  status?: string;
+  incomplete_details?: { reason?: string } | null;
   output_text?: string;
   output?: Array<{
     type?: string;
@@ -22,6 +25,18 @@ type OpenAIResponse = {
   }>;
   error?: { message?: string };
 };
+
+function readOpenAIError(data: OpenAIResponse): string | undefined {
+  if (data.error?.message) return data.error.message;
+
+  if (data.status === 'incomplete') {
+    return data.incomplete_details?.reason === 'max_output_tokens'
+      ? 'The narrator ran out of output space before writing the scene. Please retry.'
+      : 'The narrator could not finish the response. Please retry.';
+  }
+
+  return undefined;
+}
 
 type ChatRequest<TResponse> = {
   url: string;
@@ -32,7 +47,7 @@ type ChatRequest<TResponse> = {
   connectionError: string;
 };
 
-function proxyRequest(messages: ChatMessage[]): ChatRequest<ProxyChatResponse> {
+function proxyRequest(messages: NovelMessage[]): ChatRequest<ProxyChatResponse> {
   if (!PROXY_API_URL) {
     throw new Error(
       'Missing EXPO_PUBLIC_API_URL. Copy .env.example to .env.local and set your computer\'s LAN address.',
@@ -53,7 +68,7 @@ function proxyRequest(messages: ChatMessage[]): ChatRequest<ProxyChatResponse> {
 }
 
 function directOpenAIRequest(
-  messages: ChatMessage[],
+  messages: NovelMessage[],
   apiKey: string,
 ): ChatRequest<OpenAIResponse> {
   const normalizedApiKey = normalizeOpenAIApiKey(apiKey);
@@ -67,9 +82,9 @@ function directOpenAIRequest(
     body: {
       model: OPENAI_MODEL,
       instructions:
-        'You are WorldForge, a concise and thoughtful assistant. Be helpful, accurate, and transparent about uncertainty.',
+        'You are WorldForge, an interactive visual-novel narrator and game master. Follow the story brief in the first user message, preserve continuity, and stop at meaningful player decisions.',
       input: messages.map(({ role, content }) => ({ role, content })),
-      max_output_tokens: 1000,
+      max_output_tokens: MAX_OUTPUT_TOKENS,
       store: false,
     },
     readReply: (data) => {
@@ -84,7 +99,7 @@ function directOpenAIRequest(
         .join('\n');
       return outputText || undefined;
     },
-    readError: (data) => data.error?.message,
+    readError: readOpenAIError,
     connectionError:
       'Could not reach OpenAI. Check your internet connection and try again.',
   };
@@ -122,7 +137,10 @@ async function postChat<TResponse>(
     }
     const reply = request.readReply(data);
     if (!reply) {
-      throw new Error('The model returned an empty response.');
+      throw new Error(
+        request.readError(data) ??
+          'The narrator returned no story text. Please retry.',
+      );
     }
 
     return reply;
@@ -140,7 +158,7 @@ async function postChat<TResponse>(
 }
 
 export async function sendChat(
-  messages: ChatMessage[],
+  messages: NovelMessage[],
   transport: ChatTransport = { type: 'proxy' },
 ): Promise<string> {
   if (transport.type === 'openai') {

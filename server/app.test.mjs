@@ -5,7 +5,10 @@ import { createChatServer } from './app.mjs';
 
 let baseUrl;
 const server = createChatServer({
-  generateReply: async (messages) => `Echo: ${messages.at(-1).content}`,
+  generateReply: async (messages) =>
+    messages.at(-1).content === 'Inspect context'
+      ? `${messages[0].content}|${messages.length}`
+      : `Echo: ${messages.at(-1).content}`,
 });
 
 before(async () => {
@@ -38,6 +41,27 @@ test('chat endpoint validates and forwards messages', async () => {
 
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { reply: 'Echo: Hello' });
+});
+
+test('chat endpoint keeps the original story brief when trimming context', async () => {
+  const messages = [
+    { role: 'user', content: 'Original story brief' },
+    ...Array.from({ length: 33 }, (_, index) => ({
+      role: index % 2 === 0 ? 'assistant' : 'user',
+      content: `Story turn ${index + 1}`,
+    })),
+    { role: 'user', content: 'Inspect context' },
+  ];
+  const response = await fetch(`${baseUrl}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider: 'openai', messages }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    reply: 'Original story brief|30',
+  });
 });
 
 test('chat endpoint rejects unsupported providers', async () => {

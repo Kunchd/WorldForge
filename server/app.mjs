@@ -46,7 +46,12 @@ function validateMessages(value) {
     throw error;
   }
 
-  const messages = value.slice(-MAX_MESSAGES).map((message) => {
+  const contextMessages =
+    value.length > MAX_MESSAGES
+      ? [value[0], ...value.slice(-(MAX_MESSAGES - 1))]
+      : value;
+
+  const messages = contextMessages.map((message) => {
     const role = message?.role;
     const content = message?.content?.trim();
     if ((role !== 'user' && role !== 'assistant') || !content) {
@@ -62,7 +67,7 @@ function validateMessages(value) {
     0,
   );
   if (characterCount > MAX_TOTAL_CHARACTERS) {
-    const error = new Error('Conversation is too long. Start a new chat.');
+    const error = new Error('This story turn is too long. Shorten your response.');
     error.statusCode = 413;
     throw error;
   }
@@ -105,7 +110,7 @@ export function createChatServer({ generateReply = generateOpenAIReply } = {}) {
           ? error.status
           : 500;
       const safeMessage =
-        statusCode >= 500 && statusCode !== 503
+        statusCode >= 500 && statusCode !== 503 && !error?.expose
           ? 'The AI service could not complete the request.'
           : error instanceof Error
             ? error.message

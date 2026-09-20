@@ -23,6 +23,8 @@ export function buildOpenAIUsageRecord(
     response_id: response.id ?? null,
     request_id: response._request_id ?? null,
     model: response.model ?? null,
+    status: response.status ?? null,
+    incomplete_reason: response.incomplete_details?.reason ?? null,
     message_count: messageCount ?? null,
     duration_ms: durationMs ?? null,
     input_tokens: inputTokens,

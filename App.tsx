@@ -7,15 +7,13 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
-import {
-  SafeAreaProvider,
-  SafeAreaView,
-} from 'react-native-safe-area-context';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import {
   ChatApiMode,
@@ -27,115 +25,107 @@ import {
 } from './src/lib/apiSettings';
 import { normalizeOpenAIApiKey } from './src/lib/apiKey';
 import { sendChat } from './src/lib/chatApi';
-import { loadChats, saveChats } from './src/lib/chatStorage';
-import { Chat, ChatMessage } from './src/types/chat';
+import { loadNovels, saveNovels } from './src/lib/novelStorage';
+import { buildStoryPrompt } from './src/lib/storyPrompt';
+import { Novel, NovelMessage } from './src/types/novel';
 
 const COLORS = {
-  background: '#0B0F14',
-  panel: '#121821',
-  panelRaised: '#19212C',
-  border: '#263241',
-  text: '#F4F7FB',
-  muted: '#92A0B3',
-  accent: '#7BE0B8',
-  accentDark: '#123D32',
+  background: '#0D0C12',
+  panel: '#17151E',
+  raised: '#211E2A',
+  border: '#332D40',
+  text: '#F8F2E8',
+  muted: '#AAA1B6',
+  accent: '#F2B84B',
+  accentDark: '#4A3514',
+  rose: '#E88D9D',
   danger: '#FFB4AB',
   dangerBackground: '#3A1D20',
 };
+
+const COVER_COLORS = ['#733D5A', '#315C63', '#634A8B', '#8A5538', '#3D6650'];
+type Screen = 'library' | 'create' | 'settings';
 
 function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-function createWelcomeMessage(): ChatMessage {
-  return {
-    id: createId('welcome'),
-    role: 'assistant',
-    content:
-      "Hi — I'm your WorldForge assistant. Ask me to brainstorm a setting, develop a character, or answer anything else.",
-  };
-}
-
-function createChat(): Chat {
-  const timestamp = new Date().toISOString();
-  return {
-    id: createId('chat'),
-    title: 'New chat',
-    messages: [createWelcomeMessage()],
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  };
-}
-
-function titleFromMessage(content: string) {
-  const normalized = content.replace(/\s+/g, ' ').trim();
-  return normalized.length > 44
-    ? `${normalized.slice(0, 44).trimEnd()}…`
-    : normalized;
+function deriveTitle(setting: string) {
+  const phrase = setting.trim().split(/[.!?\n]/)[0].replace(/\s+/g, ' ');
+  if (!phrase) return 'Untitled Chronicle';
+  return phrase.length > 34 ? `${phrase.slice(0, 34).trimEnd()}…` : phrase;
 }
 
 function formatUpdatedAt(timestamp: string) {
   const date = new Date(timestamp);
   if (Number.isNaN(date.getTime())) return '';
-
-  return date.toLocaleString(undefined, {
+  return date.toLocaleDateString(undefined, {
     month: 'short',
     day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
+    year: date.getFullYear() === new Date().getFullYear() ? undefined : 'numeric',
   });
 }
 
-function previewForChat(chat: Chat) {
-  if (chat.messages.length <= 1) return 'No messages yet';
-  const message = chat.messages[chat.messages.length - 1];
-  const prefix = message.role === 'user' ? 'You: ' : '';
-  return `${prefix}${message.content.replace(/\s+/g, ' ')}`;
+function previewForNovel(novel: Novel) {
+  const messages = novel.messages.filter((message) => !message.isSetup);
+  const message = messages[messages.length - 1];
+  return message
+    ? message.content.replace(/\s+/g, ' ')
+    : 'Your story is ready to begin.';
+}
+
+function coverColorFor(novel: Novel) {
+  const seed = [...novel.id].reduce(
+    (total, character) => total + character.charCodeAt(0),
+    0,
+  );
+  return COVER_COLORS[seed % COVER_COLORS.length];
 }
 
 export default function App() {
-  const [chats, setChats] = useState<Chat[]>([]);
-  const [activeChatId, setActiveChatId] = useState<string | null>(null);
+  const [screen, setScreen] = useState<Screen>('library');
+  const [novels, setNovels] = useState<Novel[]>([]);
+  const [activeNovelId, setActiveNovelId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
+  const [novelTitle, setNovelTitle] = useState('');
+  const [storySetting, setStorySetting] = useState('');
+  const [storyPlot, setStoryPlot] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [isHydrating, setIsHydrating] = useState(true);
   const [persistenceVersion, setPersistenceVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [persistenceError, setPersistenceError] = useState<string | null>(null);
   const [apiMode, setApiMode] = useState<ChatApiMode>('proxy');
-  const [pendingApiMode, setPendingApiMode] = useState<ChatApiMode | null>(
-    null,
-  );
+  const [pendingApiMode, setPendingApiMode] = useState<ChatApiMode | null>(null);
   const [openAIApiKey, setOpenAIApiKey] = useState<string | null>(null);
   const [apiKeyDraft, setApiKeyDraft] = useState('');
   const [isEditingApiKey, setIsEditingApiKey] = useState(false);
   const [isSavingApiSettings, setIsSavingApiSettings] = useState(false);
   const [apiSettingsError, setApiSettingsError] = useState<string | null>(null);
   const [apiSettingsNotice, setApiSettingsNotice] = useState<string | null>(null);
-  const listRef = useRef<FlatList<ChatMessage>>(null);
+  const listRef = useRef<FlatList<NovelMessage>>(null);
   const apiKeyInputRef = useRef<TextInput>(null);
   const storageWriteQueue = useRef<Promise<void>>(Promise.resolve());
 
-  const activeChat = chats.find((chat) => chat.id === activeChatId) ?? null;
+  const activeNovel = novels.find((novel) => novel.id === activeNovelId) ?? null;
+  const visibleMessages =
+    activeNovel?.messages.filter((message) => !message.isSetup) ?? [];
 
   useEffect(() => {
     let isMounted = true;
-
-    Promise.allSettled([loadChats(), loadChatApiSettings()]).then(
-      ([chatsResult, settingsResult]) => {
+    Promise.allSettled([loadNovels(), loadChatApiSettings()]).then(
+      ([novelsResult, settingsResult]) => {
         if (!isMounted) return;
-
-        if (chatsResult.status === 'fulfilled') {
-          setChats(chatsResult.value);
+        if (novelsResult.status === 'fulfilled') {
+          setNovels(novelsResult.value);
         } else {
-          const caughtError = chatsResult.reason;
+          const caughtError = novelsResult.reason;
           setPersistenceError(
             caughtError instanceof Error
-              ? `Could not load saved chats: ${caughtError.message}`
-              : 'Could not load saved chats.',
+              ? `Could not load saved novels: ${caughtError.message}`
+              : 'Could not load saved novels.',
           );
         }
-
         if (settingsResult.status === 'fulfilled') {
           setApiMode(settingsResult.value.mode);
           setOpenAIApiKey(settingsResult.value.openAIApiKey);
@@ -147,258 +137,70 @@ export default function App() {
               : 'Could not load API settings.',
           );
         }
-
         setIsHydrating(false);
       },
     );
-
     return () => {
       isMounted = false;
     };
   }, []);
 
-  async function handleUseProxy() {
-    if (isSavingApiSettings) return;
-    setPendingApiMode('proxy');
-    setIsSavingApiSettings(true);
-    setApiSettingsError(null);
-    setApiSettingsNotice(null);
-
-    try {
-      await saveChatApiMode('proxy');
-      setApiMode('proxy');
-      setPendingApiMode(null);
-      setIsEditingApiKey(false);
-      setApiSettingsNotice('Messages will use the configured proxy.');
-    } catch (caughtError) {
-      setApiSettingsError(
-        caughtError instanceof Error
-          ? caughtError.message
-          : 'Could not save the API mode.',
-      );
-    } finally {
-      setPendingApiMode(null);
-      setIsSavingApiSettings(false);
-    }
-  }
-
-  async function handleUseDirectOpenAI() {
-    if (isSavingApiSettings) return;
-    setApiSettingsError(null);
-    setApiSettingsNotice(null);
-
-    if (!supportsDirectOpenAI()) {
-      setApiSettingsError(
-        'Direct OpenAI access is available in the Android and iOS apps only.',
-      );
-      return;
-    }
-
-    if (!openAIApiKey) {
-      setPendingApiMode('direct');
-      setIsEditingApiKey(true);
-      setTimeout(() => apiKeyInputRef.current?.focus(), 0);
-      return;
-    }
-
-    setPendingApiMode('direct');
-    setIsSavingApiSettings(true);
-    try {
-      await saveChatApiMode('direct');
-      setApiMode('direct');
-      setPendingApiMode(null);
-      setApiSettingsNotice('Messages will be sent directly to OpenAI.');
-    } catch (caughtError) {
-      setApiSettingsError(
-        caughtError instanceof Error
-          ? caughtError.message
-          : 'Could not save the API mode.',
-      );
-    } finally {
-      setPendingApiMode(null);
-      setIsSavingApiSettings(false);
-    }
-  }
-
-  async function handleSaveOpenAIKey() {
-    if (isSavingApiSettings) return;
-    const normalizedApiKey = normalizeOpenAIApiKey(apiKeyDraft);
-    if (!normalizedApiKey) {
-      setApiSettingsError('Enter an OpenAI API key.');
-      return;
-    }
-
-    setIsSavingApiSettings(true);
-    setPendingApiMode('direct');
-    setApiSettingsError(null);
-    setApiSettingsNotice(null);
-
-    try {
-      const savedApiKey = await saveOpenAIApiKey(normalizedApiKey);
-      setOpenAIApiKey(savedApiKey);
-      await saveChatApiMode('direct');
-      setApiMode('direct');
-      setPendingApiMode(null);
-      setApiKeyDraft('');
-      setIsEditingApiKey(false);
-      setApiSettingsNotice(
-        'API key saved. Messages will be sent directly to OpenAI.',
-      );
-    } catch (caughtError) {
-      setApiSettingsError(
-        caughtError instanceof Error
-          ? caughtError.message
-          : 'Could not save the API key.',
-      );
-    } finally {
-      setIsSavingApiSettings(false);
-    }
-  }
-
-  async function removeOpenAIKey() {
-    setIsSavingApiSettings(true);
-    setPendingApiMode('proxy');
-    setApiSettingsError(null);
-    setApiSettingsNotice(null);
-
-    try {
-      await deleteOpenAIApiKey();
-      await saveChatApiMode('proxy');
-      setOpenAIApiKey(null);
-      setApiMode('proxy');
-      setPendingApiMode(null);
-      setApiKeyDraft('');
-      setIsEditingApiKey(false);
-      setApiSettingsNotice('API key removed. Messages will use the proxy.');
-    } catch (caughtError) {
-      setPendingApiMode(null);
-      setApiSettingsError(
-        caughtError instanceof Error
-          ? caughtError.message
-          : 'Could not remove the API key.',
-      );
-    } finally {
-      setIsSavingApiSettings(false);
-    }
-  }
-
-  function handleRemoveOpenAIKey() {
-    Alert.alert(
-      'Remove OpenAI API key?',
-      'WorldForge will switch back to the configured proxy.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Remove',
-          style: 'destructive',
-          onPress: () => void removeOpenAIKey(),
-        },
-      ],
-    );
-  }
-
   useEffect(() => {
     if (isHydrating || persistenceVersion === 0) return;
-
     storageWriteQueue.current = storageWriteQueue.current
       .catch(() => undefined)
-      .then(() => saveChats(chats))
+      .then(() => saveNovels(novels))
       .then(() => setPersistenceError(null))
       .catch((caughtError: unknown) => {
         setPersistenceError(
           caughtError instanceof Error
-            ? `Could not save chats: ${caughtError.message}`
-            : 'Could not save chats.',
+            ? `Could not save novels: ${caughtError.message}`
+            : 'Could not save novels.',
         );
       });
-  }, [chats, isHydrating, persistenceVersion]);
+  }, [isHydrating, novels, persistenceVersion]);
 
   useEffect(() => {
-    if (!activeChat) return;
+    if (!activeNovel) return;
     const timer = setTimeout(
       () => listRef.current?.scrollToEnd({ animated: true }),
       80,
     );
     return () => clearTimeout(timer);
-  }, [activeChat?.messages, isSending]);
+  }, [activeNovel?.messages, isSending]);
 
-  function updateChats(updater: (current: Chat[]) => Chat[]) {
-    setChats(updater);
+  function updateNovels(updater: (current: Novel[]) => Novel[]) {
+    setNovels(updater);
     setPersistenceVersion((current) => current + 1);
   }
 
-  function updateChat(chatId: string, updater: (chat: Chat) => Chat) {
-    updateChats((current) =>
+  function updateNovel(novelId: string, updater: (novel: Novel) => Novel) {
+    updateNovels((current) =>
       current
-        .map((chat) => (chat.id === chatId ? updater(chat) : chat))
-        .sort((first, second) =>
-          second.updatedAt.localeCompare(first.updatedAt),
-        ),
+        .map((novel) => (novel.id === novelId ? updater(novel) : novel))
+        .sort((first, second) => second.updatedAt.localeCompare(first.updatedAt)),
     );
   }
 
-  function handleNewChat() {
-    if (isSending) return;
-    const chat = createChat();
-    updateChats((current) => [chat, ...current]);
-    setActiveChatId(chat.id);
-    setDraft('');
-    setError(null);
+  function currentTransport() {
+    return apiMode === 'direct' && openAIApiKey
+      ? { type: 'openai' as const, apiKey: openAIApiKey }
+      : { type: 'proxy' as const };
   }
 
-  function handleOpenChat(chatId: string) {
-    if (isSending) return;
-    setActiveChatId(chatId);
-    setDraft('');
-    setError(null);
-  }
-
-  function handleGoHome() {
-    if (isSending) return;
-    setActiveChatId(null);
-    setDraft('');
-    setError(null);
-  }
-
-  async function handleSend() {
-    const content = draft.trim();
-    if (!content || isSending || !activeChat) return;
-
-    const chatId = activeChat.id;
-    const userMessage: ChatMessage = {
-      id: createId('user'),
-      role: 'user',
-      content,
-    };
-    const conversation = [...activeChat.messages, userMessage];
-    const updatedAt = new Date().toISOString();
-
-    setDraft('');
-    setError(null);
-    updateChat(chatId, (chat) => ({
-      ...chat,
-      title:
-        chat.title === 'New chat' ? titleFromMessage(content) : chat.title,
-      messages: conversation,
-      updatedAt,
-    }));
+  async function requestStoryReply(
+    novelId: string,
+    conversation: NovelMessage[],
+  ) {
     setIsSending(true);
-
+    setError(null);
     try {
-      const transport =
-        apiMode === 'direct' && openAIApiKey
-          ? { type: 'openai' as const, apiKey: openAIApiKey }
-          : { type: 'proxy' as const };
-      const reply = await sendChat(conversation, transport);
-      updateChat(chatId, (chat) => ({
-        ...chat,
+      const reply = await sendChat(conversation, currentTransport());
+      updateNovel(novelId, (novel) => ({
+        ...novel,
         messages: [
-          ...chat.messages,
-          {
-            id: createId('assistant'),
-            role: 'assistant',
-            content: reply,
-          },
+          ...novel.messages,
+          { id: createId('narrator'), role: 'assistant', content: reply },
         ],
         updatedAt: new Date().toISOString(),
       }));
@@ -413,28 +215,197 @@ export default function App() {
     }
   }
 
+  function handleCreateNovel() {
+    const setting = storySetting.trim();
+    const plot = storyPlot.trim();
+    if (!setting || !plot || isSending) return;
+    const timestamp = new Date().toISOString();
+    const setupMessage: NovelMessage = {
+      id: createId('story-brief'),
+      role: 'user',
+      content: buildStoryPrompt({ setting, plot }),
+      isSetup: true,
+    };
+    const novel: Novel = {
+      id: createId('novel'),
+      title: novelTitle.trim() || deriveTitle(setting),
+      setting,
+      plot,
+      messages: [setupMessage],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    updateNovels((current) => [novel, ...current]);
+    setActiveNovelId(novel.id);
+    setScreen('library');
+    setNovelTitle('');
+    setStorySetting('');
+    setStoryPlot('');
+    void requestStoryReply(novel.id, novel.messages);
+  }
+
+  function handleSend() {
+    const content = draft.trim();
+    if (!content || isSending || !activeNovel) return;
+    const userMessage: NovelMessage = {
+      id: createId('player'),
+      role: 'user',
+      content,
+    };
+    const conversation = [...activeNovel.messages, userMessage];
+    const novelId = activeNovel.id;
+    setDraft('');
+    updateNovel(novelId, (novel) => ({
+      ...novel,
+      messages: conversation,
+      updatedAt: new Date().toISOString(),
+    }));
+    void requestStoryReply(novelId, conversation);
+  }
+
+  function handleGoLibrary() {
+    if (isSending) return;
+    setActiveNovelId(null);
+    setScreen('library');
+    setDraft('');
+    setError(null);
+  }
+
+  async function handleUseProxy() {
+    if (isSavingApiSettings) return;
+    setPendingApiMode('proxy');
+    setIsSavingApiSettings(true);
+    setApiSettingsError(null);
+    setApiSettingsNotice(null);
+    try {
+      await saveChatApiMode('proxy');
+      setApiMode('proxy');
+      setIsEditingApiKey(false);
+      setApiSettingsNotice('New story turns will use the configured proxy.');
+    } catch (caughtError) {
+      setApiSettingsError(
+        caughtError instanceof Error ? caughtError.message : 'Could not save the API mode.',
+      );
+    } finally {
+      setPendingApiMode(null);
+      setIsSavingApiSettings(false);
+    }
+  }
+
+  async function handleUseDirectOpenAI() {
+    if (isSavingApiSettings) return;
+    setApiSettingsError(null);
+    setApiSettingsNotice(null);
+    if (!supportsDirectOpenAI()) {
+      setApiSettingsError(
+        'Direct OpenAI access is available in the Android and iOS apps only.',
+      );
+      return;
+    }
+    if (!openAIApiKey) {
+      setPendingApiMode('direct');
+      setIsEditingApiKey(true);
+      setTimeout(() => apiKeyInputRef.current?.focus(), 0);
+      return;
+    }
+    setPendingApiMode('direct');
+    setIsSavingApiSettings(true);
+    try {
+      await saveChatApiMode('direct');
+      setApiMode('direct');
+      setApiSettingsNotice('New story turns will be sent directly to OpenAI.');
+    } catch (caughtError) {
+      setApiSettingsError(
+        caughtError instanceof Error ? caughtError.message : 'Could not save the API mode.',
+      );
+    } finally {
+      setPendingApiMode(null);
+      setIsSavingApiSettings(false);
+    }
+  }
+
+  async function handleSaveOpenAIKey() {
+    if (isSavingApiSettings) return;
+    const normalizedApiKey = normalizeOpenAIApiKey(apiKeyDraft);
+    if (!normalizedApiKey) {
+      setApiSettingsError('Enter an OpenAI API key.');
+      return;
+    }
+    setIsSavingApiSettings(true);
+    setPendingApiMode('direct');
+    setApiSettingsError(null);
+    setApiSettingsNotice(null);
+    try {
+      const savedApiKey = await saveOpenAIApiKey(normalizedApiKey);
+      setOpenAIApiKey(savedApiKey);
+      await saveChatApiMode('direct');
+      setApiMode('direct');
+      setApiKeyDraft('');
+      setIsEditingApiKey(false);
+      setApiSettingsNotice(
+        'API key saved. New story turns will be sent directly to OpenAI.',
+      );
+    } catch (caughtError) {
+      setApiSettingsError(
+        caughtError instanceof Error ? caughtError.message : 'Could not save the API key.',
+      );
+    } finally {
+      setPendingApiMode(null);
+      setIsSavingApiSettings(false);
+    }
+  }
+
+  async function removeOpenAIKey() {
+    setIsSavingApiSettings(true);
+    setPendingApiMode('proxy');
+    setApiSettingsError(null);
+    setApiSettingsNotice(null);
+    try {
+      await deleteOpenAIApiKey();
+      await saveChatApiMode('proxy');
+      setOpenAIApiKey(null);
+      setApiMode('proxy');
+      setApiKeyDraft('');
+      setIsEditingApiKey(false);
+      setApiSettingsNotice('API key removed. New turns will use the proxy.');
+    } catch (caughtError) {
+      setApiSettingsError(
+        caughtError instanceof Error ? caughtError.message : 'Could not remove the API key.',
+      );
+    } finally {
+      setPendingApiMode(null);
+      setIsSavingApiSettings(false);
+    }
+  }
+
+  function handleRemoveOpenAIKey() {
+    Alert.alert(
+      'Remove OpenAI API key?',
+      'WorldForge will switch back to the configured proxy.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Remove', style: 'destructive', onPress: () => void removeOpenAIKey() },
+      ],
+    );
+  }
+
   function renderApiSettings() {
     const directSupported = supportsDirectOpenAI();
     const selectedApiMode = pendingApiMode ?? apiMode;
     const hasApiKeyDraft = Boolean(normalizeOpenAIApiKey(apiKeyDraft));
-
     return (
       <View style={styles.connectionCard}>
         <View style={styles.connectionHeadingRow}>
-          <View style={styles.connectionHeadingText}>
+          <View style={styles.flex}>
             <Text style={styles.connectionTitle}>AI connection</Text>
             <Text style={styles.connectionDescription}>
-              Choose where the app sends chat requests.
+              Choose how WorldForge sends story requests.
             </Text>
           </View>
-          {isSavingApiSettings ? (
-            <ActivityIndicator color={COLORS.accent} size="small" />
-          ) : null}
+          {isSavingApiSettings ? <ActivityIndicator color={COLORS.accent} /> : null}
         </View>
-
         <View style={styles.connectionOptions}>
           <Pressable
-            accessibilityLabel="Use the configured server proxy"
             accessibilityRole="button"
             accessibilityState={{ selected: selectedApiMode === 'proxy' }}
             disabled={isSavingApiSettings}
@@ -445,19 +416,12 @@ export default function App() {
               pressed && styles.buttonPressed,
             ]}
           >
-            <Text
-              style={[
-                styles.connectionOptionTitle,
-                selectedApiMode === 'proxy' &&
-                  styles.connectionOptionTitleSelected,
-              ]}
-            >
+            <Text style={[styles.optionTitle, selectedApiMode === 'proxy' && styles.optionSelectedText]}>
               Server proxy
             </Text>
-            <Text style={styles.connectionOptionText}>Uses the app service</Text>
+            <Text style={styles.optionText}>Uses the app service</Text>
           </Pressable>
           <Pressable
-            accessibilityLabel="Use my OpenAI API key"
             accessibilityRole="button"
             accessibilityState={{ selected: selectedApiMode === 'direct' }}
             disabled={isSavingApiSettings}
@@ -468,23 +432,16 @@ export default function App() {
               pressed && styles.buttonPressed,
             ]}
           >
-            <Text
-              style={[
-                styles.connectionOptionTitle,
-                selectedApiMode === 'direct' &&
-                  styles.connectionOptionTitleSelected,
-              ]}
-            >
+            <Text style={[styles.optionTitle, selectedApiMode === 'direct' && styles.optionSelectedText]}>
               My API key
             </Text>
-            <Text style={styles.connectionOptionText}>Connects to OpenAI</Text>
+            <Text style={styles.optionText}>Connects to OpenAI</Text>
           </Pressable>
         </View>
-
         {!directSupported ? (
-          <Text style={styles.connectionHint}>
-            Direct access is available in the Android and iOS apps. The web app
-            continues to use the proxy.
+          <Text style={styles.hint}>
+            Direct access is available in the Android and iOS apps. Web continues
+            to use the proxy.
           </Text>
         ) : !openAIApiKey || isEditingApiKey ? (
           <View style={styles.apiKeyEditor}>
@@ -499,7 +456,6 @@ export default function App() {
               onSubmitEditing={() => void handleSaveOpenAIKey()}
               placeholder="OpenAI API key"
               placeholderTextColor={COLORS.muted}
-              returnKeyType="done"
               secureTextEntry
               style={styles.apiKeyInput}
               value={apiKeyDraft}
@@ -507,49 +463,36 @@ export default function App() {
             <View style={styles.apiKeyActions}>
               {openAIApiKey ? (
                 <Pressable
-                  disabled={isSavingApiSettings}
                   onPress={() => {
                     setApiKeyDraft('');
                     setIsEditingApiKey(false);
                     setApiSettingsError(null);
                   }}
-                  style={({ pressed }) => [
-                    styles.secondaryButton,
-                    pressed && styles.buttonPressed,
-                  ]}
+                  style={styles.secondaryButton}
                 >
                   <Text style={styles.secondaryButtonText}>Cancel</Text>
                 </Pressable>
               ) : null}
               <Pressable
-                accessibilityLabel="Save OpenAI API key"
                 disabled={!hasApiKeyDraft || isSavingApiSettings}
                 onPress={() => void handleSaveOpenAIKey()}
-                style={({ pressed }) => [
-                  styles.saveKeyButton,
-                  (!hasApiKeyDraft || isSavingApiSettings) &&
-                    styles.buttonDisabled,
-                  pressed && styles.buttonPressed,
-                ]}
+                style={[styles.saveButton, (!hasApiKeyDraft || isSavingApiSettings) && styles.buttonDisabled]}
               >
-                <Text style={styles.primaryButtonText}>Save & use key</Text>
+                <Text style={styles.darkButtonText}>Save & use key</Text>
               </Pressable>
             </View>
-            <Text style={styles.connectionHint}>
-              Encrypted in this device's system storage and sent only to OpenAI
-              when direct mode is selected.
+            <Text style={styles.hint}>
+              Encrypted in this device&apos;s system storage and sent only to OpenAI
+              in direct mode.
             </Text>
           </View>
         ) : (
           <View style={styles.savedKeyRow}>
-            <View style={styles.savedKeyText}>
+            <View style={styles.flex}>
               <Text style={styles.savedKeyTitle}>API key saved securely</Text>
-              <Text style={styles.connectionHint}>
-                The saved key is never sent to the WorldForge proxy.
-              </Text>
+              <Text style={styles.hint}>Never sent to the WorldForge proxy.</Text>
             </View>
             <Pressable
-              disabled={isSavingApiSettings}
               onPress={() => {
                 setApiKeyDraft('');
                 setIsEditingApiKey(true);
@@ -557,262 +500,319 @@ export default function App() {
                 setApiSettingsNotice(null);
                 setTimeout(() => apiKeyInputRef.current?.focus(), 0);
               }}
-              style={({ pressed }) => [
-                styles.keyActionButton,
-                pressed && styles.buttonPressed,
-              ]}
+              style={styles.keyAction}
             >
               <Text style={styles.keyActionText}>Replace</Text>
             </Pressable>
-            <Pressable
-              disabled={isSavingApiSettings}
-              onPress={handleRemoveOpenAIKey}
-              style={({ pressed }) => [
-                styles.keyActionButton,
-                pressed && styles.buttonPressed,
-              ]}
-            >
+            <Pressable onPress={handleRemoveOpenAIKey} style={styles.keyAction}>
               <Text style={styles.removeKeyText}>Remove</Text>
             </Pressable>
           </View>
         )}
-
         {apiSettingsError ? (
-          <View style={styles.settingsErrorBanner}>
-            <Text style={styles.errorText}>{apiSettingsError}</Text>
-          </View>
+          <View style={styles.settingsError}><Text style={styles.errorText}>{apiSettingsError}</Text></View>
         ) : null}
         {apiSettingsNotice ? (
-          <View style={styles.noticeBanner}>
-            <Text style={styles.noticeText}>{apiSettingsNotice}</Text>
-          </View>
+          <View style={styles.notice}><Text style={styles.noticeText}>{apiSettingsNotice}</Text></View>
         ) : null}
       </View>
     );
   }
 
-  function renderHome() {
+  function renderLibrary() {
     return (
       <View style={styles.screen}>
         <View style={styles.homeHeader}>
-          <View style={styles.brandBlock}>
+          <View style={styles.flex}>
             <Text style={styles.eyebrow}>WORLD FORGE</Text>
-            <Text style={styles.homeTitle}>Your chats</Text>
+            <Text style={styles.homeTitle}>Your library</Text>
             <Text style={styles.homeSubtitle}>
-              Continue building a world or start somewhere new.
+              Step into a story, or forge a world of your own.
             </Text>
           </View>
           <Pressable
-            accessibilityLabel="Create a new chat"
-            onPress={handleNewChat}
-            style={({ pressed }) => [
-              styles.primaryButton,
-              pressed && styles.buttonPressed,
-            ]}
+            accessibilityLabel="Open settings"
+            onPress={() => setScreen('settings')}
+            style={({ pressed }) => [styles.iconButton, pressed && styles.buttonPressed]}
           >
-            <Text style={styles.primaryButtonText}>+ New chat</Text>
+            <Text style={styles.iconButtonText}>⚙</Text>
           </Pressable>
         </View>
-
         {persistenceError ? (
           <View style={[styles.errorBanner, styles.homeError]}>
             <Text style={styles.errorText}>{persistenceError}</Text>
           </View>
         ) : null}
-
-        {renderApiSettings()}
-
-        {chats.length === 0 ? (
+        {novels.length === 0 ? (
           <View style={styles.emptyState}>
-            <Text style={styles.emptyIcon}>✦</Text>
-            <Text style={styles.emptyTitle}>Forge your first conversation</Text>
+            <View style={styles.emptySigil}><Text style={styles.emptyIcon}>✦</Text></View>
+            <Text style={styles.emptyTitle}>Your next world awaits</Text>
             <Text style={styles.emptyText}>
-              Your chats will be saved on this device so you can return to them.
+              Describe a setting and its destiny. WorldForge will open the first
+              scene and remember every choice you make.
             </Text>
             <Pressable
-              accessibilityLabel="Start your first chat"
-              onPress={handleNewChat}
-              style={({ pressed }) => [
-                styles.emptyButton,
-                pressed && styles.buttonPressed,
-              ]}
+              onPress={() => setScreen('create')}
+              style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed]}
             >
-              <Text style={styles.primaryButtonText}>Start a chat</Text>
+              <Text style={styles.darkButtonText}>Forge your first novel</Text>
             </Pressable>
           </View>
         ) : (
           <FlatList
-            contentContainerStyle={styles.chatList}
-            data={chats}
-            keyExtractor={(chat) => chat.id}
+            ListHeaderComponent={
+              <View style={styles.libraryHeading}>
+                <View>
+                  <Text style={styles.sectionEyebrow}>CONTINUE READING</Text>
+                  <Text style={styles.sectionTitle}>Interactive novels</Text>
+                </View>
+                <Text style={styles.novelCount}>{novels.length}</Text>
+              </View>
+            }
+            contentContainerStyle={styles.novelGrid}
+            data={novels}
+            keyExtractor={(novel) => novel.id}
+            numColumns={2}
+            columnWrapperStyle={styles.novelRow}
             renderItem={({ item }) => (
               <Pressable
                 accessibilityLabel={`Open ${item.title}`}
-                onPress={() => handleOpenChat(item.id)}
-                style={({ pressed }) => [
-                  styles.chatCard,
-                  pressed && styles.chatCardPressed,
-                ]}
+                onPress={() => {
+                  setActiveNovelId(item.id);
+                  setError(null);
+                }}
+                style={({ pressed }) => [styles.novelCard, pressed && styles.cardPressed]}
               >
-                <View style={styles.chatCardTopRow}>
-                  <Text numberOfLines={1} style={styles.chatCardTitle}>
-                    {item.title}
-                  </Text>
-                  <Text style={styles.chatCardDate}>
-                    {formatUpdatedAt(item.updatedAt)}
-                  </Text>
+                <View style={[styles.novelCover, { backgroundColor: coverColorFor(item) }]}>
+                  <View style={styles.coverGlow} />
+                  <Text style={styles.coverMark}>✦</Text>
+                  <Text numberOfLines={3} style={styles.coverTitle}>{item.title}</Text>
+                  <Text style={styles.coverDate}>{formatUpdatedAt(item.updatedAt)}</Text>
                 </View>
-                <Text numberOfLines={2} style={styles.chatCardPreview}>
-                  {previewForChat(item)}
-                </Text>
+                <Text numberOfLines={2} style={styles.novelPreview}>{previewForNovel(item)}</Text>
               </Pressable>
             )}
           />
         )}
+        {novels.length > 0 ? (
+          <Pressable
+            onPress={() => setScreen('create')}
+            style={({ pressed }) => [styles.floatingButton, pressed && styles.buttonPressed]}
+          >
+            <Text style={styles.floatingButtonText}>＋ New novel</Text>
+          </Pressable>
+        ) : null}
       </View>
     );
   }
 
-  function renderChat() {
-    if (!activeChat) return null;
-
+  function renderCreateNovel() {
+    const canCreate = Boolean(storySetting.trim() && storyPlot.trim());
     return (
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={styles.keyboardView}
-      >
-        <View style={styles.header}>
-          <Pressable
-            accessibilityLabel="Back to chats"
-            disabled={isSending}
-            onPress={handleGoHome}
-            style={({ pressed }) => [
-              styles.headerButton,
-              isSending && styles.buttonDisabled,
-              pressed && styles.buttonPressed,
-            ]}
-          >
-            <Text style={styles.headerButtonText}>‹ Chats</Text>
-          </Pressable>
-          <View style={styles.chatHeading}>
-            <Text numberOfLines={1} style={styles.chatTitle}>
-              {activeChat.title}
-            </Text>
-            <Text style={styles.chatHeadingSubtitle}>
-              {apiMode === 'direct' ? 'Direct OpenAI' : 'OpenAI via proxy'}
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.flex}>
+        <Header title="Forge a novel" onBack={() => setScreen('library')} />
+        <ScrollView contentContainerStyle={styles.formContent} keyboardShouldPersistTaps="handled">
+          <Text style={styles.formEyebrow}>NEW CHRONICLE</Text>
+          <Text style={styles.formTitle}>What world will you enter?</Text>
+          <Text style={styles.formIntro}>
+            Give the narrator a setting and a path to follow. You’ll shape the
+            details through your choices once the opening scene begins.
+          </Text>
+          <FieldLabel title="Title" help="Optional — we can name it for you" />
+          <TextInput
+            accessibilityLabel="Novel title"
+            maxLength={80}
+            onChangeText={setNovelTitle}
+            placeholder="The Moonlit Archive"
+            placeholderTextColor={COLORS.muted}
+            style={styles.formInput}
+            value={novelTitle}
+          />
+          <FieldLabel
+            title="Story setting"
+            help="Describe the era, genre, world, atmosphere, and who you are within it."
+          />
+          <TextInput
+            accessibilityLabel="Story setting"
+            maxLength={3000}
+            multiline
+            onChangeText={setStorySetting}
+            placeholder="A floating academy above a storm-wrapped kingdom, where students bond with ancient constellations…"
+            placeholderTextColor={COLORS.muted}
+            style={[styles.formInput, styles.settingArea]}
+            textAlignVertical="top"
+            value={storySetting}
+          />
+          <FieldLabel
+            title="Plot & progression"
+            help="Outline the conflict, milestones, tone, and where the story should lead."
+          />
+          <TextInput
+            accessibilityLabel="High-level plot and progression"
+            maxLength={5000}
+            multiline
+            onChangeText={setStoryPlot}
+            placeholder="Begin with the entrance trials, build a found-family cast, reveal the academy’s secret, and end with a choice that changes the sky…"
+            placeholderTextColor={COLORS.muted}
+            style={[styles.formInput, styles.plotArea]}
+            textAlignVertical="top"
+            value={storyPlot}
+          />
+          <View style={styles.promptNote}>
+            <Text style={styles.promptMark}>✦</Text>
+            <Text style={styles.promptText}>
+              Your brief is placed into the WorldForge story prompt. The narrator
+              will open on the first playable scene.
             </Text>
           </View>
           <Pressable
-            accessibilityLabel="Create a new chat"
-            disabled={isSending}
-            onPress={handleNewChat}
+            disabled={!canCreate}
+            onPress={handleCreateNovel}
             style={({ pressed }) => [
-              styles.headerButton,
-              isSending && styles.buttonDisabled,
+              styles.forgeButton,
+              !canCreate && styles.buttonDisabled,
               pressed && styles.buttonPressed,
             ]}
           >
-            <Text style={styles.headerButtonText}>New</Text>
+            <Text style={styles.darkButtonText}>Begin the story　→</Text>
           </Pressable>
-        </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    );
+  }
 
-        <View style={styles.providerRow}>
-          <View style={styles.statusDot} />
-          <Text style={styles.providerText}>OpenAI</Text>
-          <Text style={styles.providerModel}>
-            {apiMode === 'direct'
-              ? 'using your saved API key'
-              : 'via the configured proxy'}
+  function renderSettings() {
+    return (
+      <View style={styles.screen}>
+        <Header title="Settings" onBack={() => setScreen('library')} />
+        <ScrollView contentContainerStyle={styles.settingsContent}>
+          <Text style={styles.formEyebrow}>NARRATOR</Text>
+          <Text style={styles.settingsTitle}>Connection settings</Text>
+          <Text style={styles.formIntro}>
+            Pick the route used for every novel. You can switch at any time
+            without losing your library or story history.
           </Text>
-        </View>
+          {renderApiSettings()}
+          <View style={styles.privacyCard}>
+            <Text style={styles.privacyTitle}>On-device library</Text>
+            <Text style={styles.privacyText}>
+              Novel briefs and story histories are saved locally on this device.
+              API keys use protected system storage on iOS and Android.
+            </Text>
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
 
+  function renderNovel() {
+    if (!activeNovel) return null;
+    return (
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.flex}>
+        <View style={styles.readerHeader}>
+          <Pressable
+            disabled={isSending}
+            onPress={handleGoLibrary}
+            style={[styles.headerButton, isSending && styles.buttonDisabled]}
+          >
+            <Text style={styles.headerButtonText}>‹ Library</Text>
+          </Pressable>
+          <View style={styles.readerHeading}>
+            <Text numberOfLines={1} style={styles.readerTitle}>{activeNovel.title}</Text>
+            <Text style={styles.readerSubtitle}>
+              {apiMode === 'direct' ? 'Direct OpenAI' : 'OpenAI via proxy'}
+            </Text>
+          </View>
+          <View style={styles.headerSpacer} />
+        </View>
+        <View style={styles.chapterBar}>
+          <Text style={styles.chapterBarText}>✦　YOUR STORY</Text>
+        </View>
         <FlatList
           ref={listRef}
           contentContainerStyle={styles.messageList}
-          data={activeChat.messages}
+          data={visibleMessages}
           keyExtractor={(message) => message.id}
           keyboardShouldPersistTaps="handled"
           renderItem={({ item }) => (
-            <View
-              style={[
-                styles.messageRow,
-                item.role === 'user' && styles.userMessageRow,
-              ]}
-            >
-              <View
-                style={[
-                  styles.messageBubble,
-                  item.role === 'user'
-                    ? styles.userBubble
-                    : styles.assistantBubble,
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.messageLabel,
-                    item.role === 'user' && styles.userMessageLabel,
-                  ]}
-                >
-                  {item.role === 'user' ? 'YOU' : 'ASSISTANT'}
+            <View style={[styles.messageRow, item.role === 'user' && styles.userMessageRow]}>
+              <View style={[
+                styles.messageBubble,
+                item.role === 'user' ? styles.userBubble : styles.narratorBubble,
+              ]}>
+                <Text style={[styles.messageLabel, item.role === 'user' && styles.userMessageLabel]}>
+                  {item.role === 'user' ? 'YOUR CHOICE' : 'NARRATOR'}
                 </Text>
                 <Text style={styles.messageText}>{item.content}</Text>
               </View>
             </View>
           )}
+          ListEmptyComponent={isSending ? (
+            <View style={styles.openingState}>
+              <Text style={styles.openingMark}>✦</Text>
+              <Text style={styles.openingTitle}>Opening your world</Text>
+              <Text style={styles.openingText}>The narrator is setting the first scene…</Text>
+            </View>
+          ) : null}
           ListFooterComponent={
             <>
-              {isSending ? (
+              {isSending && visibleMessages.length > 0 ? (
                 <View style={styles.typingBubble}>
                   <ActivityIndicator color={COLORS.accent} size="small" />
-                  <Text style={styles.typingText}>Thinking…</Text>
+                  <Text style={styles.typingText}>The story unfolds…</Text>
                 </View>
               ) : null}
               {error ? (
                 <View style={styles.errorBanner}>
                   <Text style={styles.errorText}>{error}</Text>
+                  {visibleMessages.length === 0 ? (
+                    <Pressable
+                      onPress={() => void requestStoryReply(activeNovel.id, activeNovel.messages)}
+                      style={styles.retryButton}
+                    >
+                      <Text style={styles.retryButtonText}>Retry opening</Text>
+                    </Pressable>
+                  ) : null}
                 </View>
               ) : null}
               {persistenceError ? (
-                <View style={styles.errorBanner}>
-                  <Text style={styles.errorText}>{persistenceError}</Text>
-                </View>
+                <View style={styles.errorBanner}><Text style={styles.errorText}>{persistenceError}</Text></View>
               ) : null}
             </>
           }
         />
-
         <View style={styles.composerShell}>
           <TextInput
-            accessibilityLabel="Message"
+            accessibilityLabel="Your choice or action"
             editable={!isSending}
             maxLength={4000}
             multiline
             onChangeText={setDraft}
             onSubmitEditing={handleSend}
-            placeholder="Message WorldForge…"
+            placeholder="What do you do?"
             placeholderTextColor={COLORS.muted}
             returnKeyType="send"
-            style={styles.input}
+            style={styles.composerInput}
             value={draft}
           />
           <Pressable
-            accessibilityLabel="Send message"
             disabled={!draft.trim() || isSending}
             onPress={handleSend}
-            style={({ pressed }) => [
-              styles.sendButton,
-              (!draft.trim() || isSending) && styles.sendButtonDisabled,
-              pressed && styles.buttonPressed,
-            ]}
+            style={[styles.sendButton, (!draft.trim() || isSending) && styles.buttonDisabled]}
           >
-            <Text style={styles.sendButtonText}>Send</Text>
+            <Text style={styles.sendButtonText}>→</Text>
           </Pressable>
         </View>
-        <Text style={styles.footerText}>
-          AI can make mistakes. Check important information.
-        </Text>
+        <Text style={styles.footerText}>Your choices shape this world. AI may occasionally lose the plot.</Text>
       </KeyboardAvoidingView>
     );
+  }
+
+  function renderScreen() {
+    if (activeNovel) return renderNovel();
+    if (screen === 'create') return renderCreateNovel();
+    if (screen === 'settings') return renderSettings();
+    return renderLibrary();
   }
 
   return (
@@ -821,355 +821,245 @@ export default function App() {
         <StatusBar style="light" />
         {isHydrating ? (
           <View style={styles.loadingScreen}>
+            <Text style={styles.openingMark}>✦</Text>
             <ActivityIndicator color={COLORS.accent} size="large" />
-            <Text style={styles.loadingText}>Loading your chats…</Text>
+            <Text style={styles.loadingText}>Opening your library…</Text>
           </View>
-        ) : activeChat ? (
-          renderChat()
-        ) : (
-          renderHome()
-        )}
+        ) : renderScreen()}
       </SafeAreaView>
     </SafeAreaProvider>
+  );
+}
+
+function Header({ title, onBack }: { title: string; onBack: () => void }) {
+  return (
+    <View style={styles.simpleHeader}>
+      <Pressable onPress={onBack} style={styles.headerButton}>
+        <Text style={styles.headerButtonText}>‹ Library</Text>
+      </Pressable>
+      <Text style={styles.simpleHeaderTitle}>{title}</Text>
+      <View style={styles.headerSpacer} />
+    </View>
+  );
+}
+
+function FieldLabel({ title, help }: { title: string; help: string }) {
+  return (
+    <View style={styles.fieldLabel}>
+      <Text style={styles.inputLabel}>{title}</Text>
+      <Text style={styles.fieldHelp}>{help}</Text>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: COLORS.background },
   screen: { flex: 1 },
-  keyboardView: { flex: 1 },
-  loadingScreen: {
-    alignItems: 'center',
-    flex: 1,
-    gap: 12,
-    justifyContent: 'center',
-  },
+  flex: { flex: 1 },
+  buttonPressed: { opacity: 0.7 },
+  buttonDisabled: { opacity: 0.38 },
+  loadingScreen: { alignItems: 'center', flex: 1, gap: 12, justifyContent: 'center' },
   loadingText: { color: COLORS.muted, fontSize: 14 },
   homeHeader: {
-    alignItems: 'flex-end',
-    borderBottomColor: COLORS.border,
-    borderBottomWidth: 1,
-    flexDirection: 'row',
-    gap: 16,
-    justifyContent: 'space-between',
-    paddingBottom: 22,
-    paddingHorizontal: 20,
-    paddingTop: Platform.OS === 'android' ? 24 : 14,
+    alignItems: 'center', borderBottomColor: COLORS.border, borderBottomWidth: 1,
+    flexDirection: 'row', gap: 16, paddingBottom: 20, paddingHorizontal: 20,
+    paddingTop: Platform.OS === 'android' ? 22 : 12,
   },
-  brandBlock: { flex: 1 },
-  eyebrow: {
-    color: COLORS.accent,
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 2.2,
-  },
+  eyebrow: { color: COLORS.accent, fontSize: 10, fontWeight: '900', letterSpacing: 2.8 },
   homeTitle: {
-    color: COLORS.text,
-    fontSize: 32,
-    fontWeight: '700',
-    letterSpacing: -0.8,
-    marginTop: 3,
+    color: COLORS.text, fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    fontSize: 34, fontWeight: '700', letterSpacing: -0.7, marginTop: 4,
   },
-  homeSubtitle: {
-    color: COLORS.muted,
-    fontSize: 14,
-    lineHeight: 20,
-    marginTop: 5,
+  homeSubtitle: { color: COLORS.muted, fontSize: 13, lineHeight: 19, marginTop: 4 },
+  iconButton: {
+    alignItems: 'center', backgroundColor: COLORS.panel, borderColor: COLORS.border,
+    borderRadius: 15, borderWidth: 1, height: 46, justifyContent: 'center', width: 46,
+  },
+  iconButtonText: { color: COLORS.text, fontSize: 20 },
+  emptyState: { alignItems: 'center', flex: 1, justifyContent: 'center', paddingHorizontal: 34 },
+  emptySigil: {
+    alignItems: 'center', backgroundColor: COLORS.accentDark, borderColor: '#76551E',
+    borderRadius: 40, borderWidth: 1, height: 80, justifyContent: 'center',
+    marginBottom: 22, width: 80,
+  },
+  emptyIcon: { color: COLORS.accent, fontSize: 34 },
+  emptyTitle: {
+    color: COLORS.text, fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    fontSize: 25, fontWeight: '700', textAlign: 'center',
+  },
+  emptyText: {
+    color: COLORS.muted, fontSize: 15, lineHeight: 23, marginTop: 10,
+    maxWidth: 350, textAlign: 'center',
   },
   primaryButton: {
-    backgroundColor: COLORS.accent,
-    borderRadius: 16,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    backgroundColor: COLORS.accent, borderRadius: 16, marginTop: 24,
+    paddingHorizontal: 22, paddingVertical: 14,
   },
-  primaryButtonText: { color: '#071510', fontSize: 14, fontWeight: '800' },
-  buttonPressed: { opacity: 0.7 },
-  buttonDisabled: { opacity: 0.4 },
+  darkButtonText: { color: '#241804', fontSize: 14, fontWeight: '900' },
   homeError: { marginHorizontal: 16, marginTop: 16 },
+  novelGrid: { padding: 16, paddingBottom: 100 },
+  libraryHeading: {
+    alignItems: 'flex-end', flexDirection: 'row', justifyContent: 'space-between',
+    paddingBottom: 16, paddingHorizontal: 2, paddingTop: 5,
+  },
+  sectionEyebrow: { color: COLORS.rose, fontSize: 9, fontWeight: '900', letterSpacing: 2 },
+  sectionTitle: { color: COLORS.text, fontSize: 20, fontWeight: '700', marginTop: 4 },
+  novelCount: { color: COLORS.muted, fontSize: 13 },
+  novelRow: { gap: 12 },
+  novelCard: { flex: 1, marginBottom: 20, maxWidth: '50%' },
+  cardPressed: { opacity: 0.72, transform: [{ scale: 0.985 }] },
+  novelCover: {
+    borderColor: '#FFFFFF20', borderRadius: 16, borderWidth: 1, height: 190,
+    justifyContent: 'flex-end', overflow: 'hidden', padding: 14,
+  },
+  coverGlow: {
+    backgroundColor: '#FFFFFF12', borderRadius: 80, height: 150,
+    position: 'absolute', right: -45, top: -35, width: 150,
+  },
+  coverMark: { color: '#FFE5AC', fontSize: 22, left: 14, position: 'absolute', top: 12 },
+  coverTitle: {
+    color: '#FFF9F0', fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    fontSize: 19, fontWeight: '800', lineHeight: 23,
+  },
+  coverDate: { color: '#FFFFFFB8', fontSize: 10, marginTop: 9 },
+  novelPreview: { color: COLORS.muted, fontSize: 12, lineHeight: 17, marginTop: 9, paddingHorizontal: 2 },
+  floatingButton: {
+    alignSelf: 'center', backgroundColor: COLORS.accent, borderRadius: 24, bottom: 20,
+    elevation: 7, paddingHorizontal: 20, paddingVertical: 13, position: 'absolute',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.35,
+    shadowRadius: 8,
+  },
+  floatingButtonText: { color: '#241804', fontSize: 14, fontWeight: '900' },
+  simpleHeader: {
+    alignItems: 'center', borderBottomColor: COLORS.border, borderBottomWidth: 1,
+    flexDirection: 'row', justifyContent: 'space-between', paddingBottom: 11,
+    paddingHorizontal: 10, paddingTop: Platform.OS === 'android' ? 18 : 7,
+  },
+  headerButton: { minWidth: 78, paddingHorizontal: 8, paddingVertical: 10 },
+  headerButtonText: { color: COLORS.accent, fontSize: 14, fontWeight: '800' },
+  simpleHeaderTitle: { color: COLORS.text, fontSize: 16, fontWeight: '800' },
+  headerSpacer: { minWidth: 78 },
+  formContent: { padding: 22, paddingBottom: 50 },
+  formEyebrow: { color: COLORS.rose, fontSize: 10, fontWeight: '900', letterSpacing: 2.4 },
+  formTitle: {
+    color: COLORS.text, fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    fontSize: 29, fontWeight: '700', lineHeight: 35, marginTop: 6,
+  },
+  formIntro: { color: COLORS.muted, fontSize: 14, lineHeight: 22, marginBottom: 10, marginTop: 10 },
+  fieldLabel: { marginTop: 18 },
+  inputLabel: { color: COLORS.text, fontSize: 15, fontWeight: '800' },
+  fieldHelp: { color: COLORS.muted, fontSize: 12, lineHeight: 18, marginTop: 4 },
+  formInput: {
+    backgroundColor: COLORS.panel, borderColor: COLORS.border, borderRadius: 14,
+    borderWidth: 1, color: COLORS.text, fontSize: 15, lineHeight: 22,
+    marginTop: 9, paddingHorizontal: 14, paddingVertical: 13,
+  },
+  settingArea: { minHeight: 125 },
+  plotArea: { minHeight: 160 },
+  promptNote: {
+    alignItems: 'flex-start', backgroundColor: '#251F2C', borderColor: COLORS.border,
+    borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: 11,
+    marginTop: 20, padding: 13,
+  },
+  promptMark: { color: COLORS.accent, fontSize: 15 },
+  promptText: { color: COLORS.muted, flex: 1, fontSize: 12, lineHeight: 18 },
+  forgeButton: {
+    alignItems: 'center', backgroundColor: COLORS.accent, borderRadius: 16,
+    marginTop: 22, paddingHorizontal: 20, paddingVertical: 15,
+  },
+  settingsContent: { padding: 20, paddingBottom: 50 },
+  settingsTitle: {
+    color: COLORS.text, fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    fontSize: 27, fontWeight: '700', marginTop: 5,
+  },
   connectionCard: {
-    backgroundColor: COLORS.panel,
-    borderColor: COLORS.border,
-    borderRadius: 18,
-    borderWidth: 1,
-    marginHorizontal: 16,
-    marginTop: 16,
-    padding: 16,
+    backgroundColor: COLORS.panel, borderColor: COLORS.border, borderRadius: 18,
+    borderWidth: 1, marginTop: 12, padding: 16,
   },
-  connectionHeadingRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 12,
-    justifyContent: 'space-between',
-  },
-  connectionHeadingText: { flex: 1 },
-  connectionTitle: { color: COLORS.text, fontSize: 17, fontWeight: '700' },
+  connectionHeadingRow: { alignItems: 'center', flexDirection: 'row', gap: 12 },
+  connectionTitle: { color: COLORS.text, fontSize: 17, fontWeight: '800' },
   connectionDescription: { color: COLORS.muted, fontSize: 13, marginTop: 3 },
   connectionOptions: { flexDirection: 'row', gap: 10, marginTop: 14 },
   connectionOption: {
-    borderColor: COLORS.border,
-    borderRadius: 13,
-    borderWidth: 1,
-    flex: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 11,
+    borderColor: COLORS.border, borderRadius: 13, borderWidth: 1, flex: 1,
+    paddingHorizontal: 12, paddingVertical: 12,
   },
-  connectionOptionSelected: {
-    backgroundColor: COLORS.accentDark,
-    borderColor: COLORS.accent,
-  },
-  connectionOptionTitle: {
-    color: COLORS.text,
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  connectionOptionTitleSelected: { color: COLORS.accent },
-  connectionOptionText: { color: COLORS.muted, fontSize: 11, marginTop: 3 },
-  connectionHint: {
-    color: COLORS.muted,
-    flexShrink: 1,
-    fontSize: 11,
-    lineHeight: 16,
-    marginTop: 9,
-  },
+  connectionOptionSelected: { backgroundColor: COLORS.accentDark, borderColor: COLORS.accent },
+  optionTitle: { color: COLORS.text, fontSize: 14, fontWeight: '800' },
+  optionSelectedText: { color: COLORS.accent },
+  optionText: { color: COLORS.muted, fontSize: 11, marginTop: 3 },
+  hint: { color: COLORS.muted, flexShrink: 1, fontSize: 11, lineHeight: 16, marginTop: 9 },
   apiKeyEditor: { marginTop: 12 },
   apiKeyInput: {
-    backgroundColor: COLORS.background,
-    borderColor: COLORS.border,
-    borderRadius: 12,
-    borderWidth: 1,
-    color: COLORS.text,
-    fontSize: 14,
-    paddingHorizontal: 13,
-    paddingVertical: 12,
+    backgroundColor: COLORS.background, borderColor: COLORS.border, borderRadius: 12,
+    borderWidth: 1, color: COLORS.text, fontSize: 14, paddingHorizontal: 13, paddingVertical: 12,
   },
-  apiKeyActions: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 10,
-    justifyContent: 'flex-end',
-    marginTop: 10,
+  apiKeyActions: { flexDirection: 'row', gap: 10, justifyContent: 'flex-end', marginTop: 10 },
+  secondaryButton: { borderColor: COLORS.border, borderRadius: 12, borderWidth: 1, padding: 10 },
+  secondaryButtonText: { color: COLORS.text, fontSize: 13, fontWeight: '800' },
+  saveButton: { backgroundColor: COLORS.accent, borderRadius: 12, padding: 10 },
+  savedKeyRow: { alignItems: 'center', flexDirection: 'row', gap: 8, marginTop: 12 },
+  savedKeyTitle: { color: COLORS.text, fontSize: 13, fontWeight: '800' },
+  keyAction: { paddingHorizontal: 5, paddingVertical: 8 },
+  keyActionText: { color: COLORS.accent, fontSize: 12, fontWeight: '800' },
+  removeKeyText: { color: COLORS.danger, fontSize: 12, fontWeight: '800' },
+  settingsError: { backgroundColor: COLORS.dangerBackground, borderRadius: 12, marginTop: 12, padding: 10 },
+  notice: { backgroundColor: COLORS.accentDark, borderRadius: 12, marginTop: 12, padding: 10 },
+  noticeText: { color: '#FFE0A3', fontSize: 12, lineHeight: 17 },
+  privacyCard: { borderColor: COLORS.border, borderRadius: 16, borderWidth: 1, marginTop: 14, padding: 15 },
+  privacyTitle: { color: COLORS.text, fontSize: 14, fontWeight: '800' },
+  privacyText: { color: COLORS.muted, fontSize: 12, lineHeight: 18, marginTop: 5 },
+  readerHeader: {
+    alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between',
+    paddingBottom: 10, paddingHorizontal: 10, paddingTop: Platform.OS === 'android' ? 17 : 6,
   },
-  secondaryButton: {
-    borderColor: COLORS.border,
-    borderRadius: 12,
-    borderWidth: 1,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+  readerHeading: { alignItems: 'center', flex: 1, paddingHorizontal: 4 },
+  readerTitle: { color: COLORS.text, fontSize: 16, fontWeight: '800', maxWidth: '100%' },
+  readerSubtitle: { color: COLORS.muted, fontSize: 10, marginTop: 2 },
+  chapterBar: {
+    alignItems: 'center', backgroundColor: COLORS.panel, borderColor: COLORS.border,
+    borderWidth: 1, paddingVertical: 9,
   },
-  secondaryButtonText: { color: COLORS.text, fontSize: 13, fontWeight: '700' },
-  saveKeyButton: {
-    backgroundColor: COLORS.accent,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-  },
-  savedKeyRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 12,
-  },
-  savedKeyText: { flex: 1 },
-  savedKeyTitle: { color: COLORS.text, fontSize: 13, fontWeight: '700' },
-  keyActionButton: { paddingHorizontal: 5, paddingVertical: 8 },
-  keyActionText: { color: COLORS.accent, fontSize: 12, fontWeight: '700' },
-  removeKeyText: { color: COLORS.danger, fontSize: 12, fontWeight: '700' },
-  settingsErrorBanner: {
-    backgroundColor: COLORS.dangerBackground,
-    borderColor: '#744049',
-    borderRadius: 12,
-    borderWidth: 1,
-    marginTop: 12,
-    padding: 10,
-  },
-  noticeBanner: {
-    backgroundColor: COLORS.accentDark,
-    borderColor: '#236954',
-    borderRadius: 12,
-    borderWidth: 1,
-    marginTop: 12,
-    padding: 10,
-  },
-  noticeText: { color: '#9BF2CF', fontSize: 12, lineHeight: 17 },
-  emptyState: {
-    alignItems: 'center',
-    flex: 1,
-    justifyContent: 'center',
-    paddingHorizontal: 38,
-  },
-  emptyIcon: { color: COLORS.accent, fontSize: 38, marginBottom: 15 },
-  emptyTitle: {
-    color: COLORS.text,
-    fontSize: 21,
-    fontWeight: '700',
-    textAlign: 'center',
-  },
-  emptyText: {
-    color: COLORS.muted,
-    fontSize: 15,
-    lineHeight: 22,
-    marginTop: 9,
-    maxWidth: 330,
-    textAlign: 'center',
-  },
-  emptyButton: {
-    backgroundColor: COLORS.accent,
-    borderRadius: 16,
-    marginTop: 22,
-    paddingHorizontal: 22,
-    paddingVertical: 13,
-  },
-  chatList: { padding: 16, paddingBottom: 30 },
-  chatCard: {
-    backgroundColor: COLORS.panel,
-    borderColor: COLORS.border,
-    borderRadius: 18,
-    borderWidth: 1,
-    marginBottom: 12,
-    padding: 16,
-  },
-  chatCardPressed: {
-    backgroundColor: COLORS.panelRaised,
-    borderColor: '#3A4C61',
-  },
-  chatCardTopRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 12,
-    justifyContent: 'space-between',
-  },
-  chatCardTitle: { color: COLORS.text, flex: 1, fontSize: 17, fontWeight: '700' },
-  chatCardDate: { color: COLORS.muted, fontSize: 11 },
-  chatCardPreview: {
-    color: COLORS.muted,
-    fontSize: 14,
-    lineHeight: 20,
-    marginTop: 8,
-  },
-  header: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingBottom: 12,
-    paddingHorizontal: 12,
-    paddingTop: Platform.OS === 'android' ? 18 : 8,
-  },
-  headerButton: {
-    minWidth: 64,
-    paddingHorizontal: 8,
-    paddingVertical: 9,
-  },
-  headerButtonText: { color: COLORS.accent, fontSize: 14, fontWeight: '700' },
-  chatHeading: { alignItems: 'center', flex: 1, paddingHorizontal: 6 },
-  chatTitle: { color: COLORS.text, fontSize: 17, fontWeight: '700', maxWidth: '100%' },
-  chatHeadingSubtitle: { color: COLORS.muted, fontSize: 11, marginTop: 2 },
-  providerRow: {
-    alignItems: 'center',
-    backgroundColor: COLORS.panel,
-    borderBottomColor: COLORS.border,
-    borderTopColor: COLORS.border,
-    borderWidth: 1,
-    flexDirection: 'row',
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-  },
-  statusDot: {
-    backgroundColor: COLORS.accent,
-    borderRadius: 4,
-    height: 8,
-    marginRight: 8,
-    width: 8,
-  },
-  providerText: { color: COLORS.text, fontSize: 13, fontWeight: '700' },
-  providerModel: { color: COLORS.muted, fontSize: 12, marginLeft: 7 },
+  chapterBarText: { color: COLORS.muted, fontSize: 9, fontWeight: '900', letterSpacing: 2 },
   messageList: { flexGrow: 1, padding: 16, paddingBottom: 24 },
-  messageRow: { alignItems: 'flex-start', marginBottom: 14 },
+  messageRow: { alignItems: 'flex-start', marginBottom: 15 },
   userMessageRow: { alignItems: 'flex-end' },
-  messageBubble: {
-    borderRadius: 18,
-    maxWidth: '88%',
-    paddingHorizontal: 15,
-    paddingVertical: 13,
-  },
-  assistantBubble: {
-    backgroundColor: COLORS.panelRaised,
-    borderColor: COLORS.border,
-    borderTopLeftRadius: 5,
-    borderWidth: 1,
-  },
-  userBubble: {
-    backgroundColor: COLORS.accentDark,
-    borderColor: '#236954',
-    borderTopRightRadius: 5,
-    borderWidth: 1,
-  },
-  messageLabel: {
-    color: COLORS.accent,
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 1.1,
-    marginBottom: 5,
-  },
-  userMessageLabel: { color: '#9BF2CF' },
-  messageText: { color: COLORS.text, fontSize: 16, lineHeight: 23 },
+  messageBubble: { borderRadius: 18, maxWidth: '91%', paddingHorizontal: 15, paddingVertical: 13 },
+  narratorBubble: { backgroundColor: COLORS.raised, borderColor: COLORS.border, borderTopLeftRadius: 5, borderWidth: 1 },
+  userBubble: { backgroundColor: '#3A2631', borderColor: '#704558', borderTopRightRadius: 5, borderWidth: 1 },
+  messageLabel: { color: COLORS.accent, fontSize: 9, fontWeight: '900', letterSpacing: 1.3, marginBottom: 6 },
+  userMessageLabel: { color: COLORS.rose },
+  messageText: { color: COLORS.text, fontSize: 16, lineHeight: 24 },
+  openingState: { alignItems: 'center', flex: 1, justifyContent: 'center', padding: 35 },
+  openingMark: { color: COLORS.accent, fontSize: 30, marginBottom: 14 },
+  openingTitle: { color: COLORS.text, fontSize: 19, fontWeight: '800' },
+  openingText: { color: COLORS.muted, fontSize: 13, marginTop: 6, textAlign: 'center' },
   typingBubble: {
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    backgroundColor: COLORS.panelRaised,
-    borderColor: COLORS.border,
-    borderRadius: 18,
-    flexDirection: 'row',
-    gap: 9,
-    paddingHorizontal: 15,
-    paddingVertical: 12,
+    alignItems: 'center', alignSelf: 'flex-start', backgroundColor: COLORS.raised,
+    borderColor: COLORS.border, borderRadius: 18, borderWidth: 1, flexDirection: 'row',
+    gap: 9, paddingHorizontal: 15, paddingVertical: 12,
   },
   typingText: { color: COLORS.muted, fontSize: 14 },
   errorBanner: {
-    backgroundColor: COLORS.dangerBackground,
-    borderColor: '#744049',
-    borderRadius: 12,
-    borderWidth: 1,
-    marginTop: 12,
-    padding: 12,
+    backgroundColor: COLORS.dangerBackground, borderColor: '#744049', borderRadius: 12,
+    borderWidth: 1, marginTop: 12, padding: 12,
   },
   errorText: { color: COLORS.danger, fontSize: 13, lineHeight: 18 },
+  retryButton: { marginTop: 9, paddingVertical: 4 },
+  retryButtonText: { color: COLORS.accent, fontSize: 13, fontWeight: '800' },
   composerShell: {
-    alignItems: 'flex-end',
-    backgroundColor: COLORS.panel,
-    borderColor: COLORS.border,
-    borderRadius: 22,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 10,
-    marginHorizontal: 12,
-    padding: 8,
+    alignItems: 'flex-end', backgroundColor: COLORS.panel, borderColor: COLORS.border,
+    borderRadius: 22, borderWidth: 1, flexDirection: 'row', gap: 10,
+    marginHorizontal: 12, padding: 8,
   },
-  input: {
-    color: COLORS.text,
-    flex: 1,
-    fontSize: 16,
-    lineHeight: 22,
-    maxHeight: 130,
-    minHeight: 44,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-    textAlignVertical: 'top',
+  composerInput: {
+    color: COLORS.text, flex: 1, fontSize: 16, lineHeight: 22, maxHeight: 130,
+    minHeight: 44, paddingHorizontal: 10, paddingVertical: 10, textAlignVertical: 'top',
   },
   sendButton: {
-    alignItems: 'center',
-    backgroundColor: COLORS.accent,
-    borderRadius: 16,
-    justifyContent: 'center',
-    minHeight: 44,
-    paddingHorizontal: 18,
+    alignItems: 'center', backgroundColor: COLORS.accent, borderRadius: 16,
+    height: 44, justifyContent: 'center', width: 48,
   },
-  sendButtonDisabled: { opacity: 0.35 },
-  sendButtonText: { color: '#071510', fontSize: 14, fontWeight: '800' },
-  footerText: {
-    color: COLORS.muted,
-    fontSize: 10,
-    paddingBottom: 8,
-    paddingTop: 7,
-    textAlign: 'center',
-  },
+  sendButtonText: { color: '#241804', fontSize: 22, fontWeight: '900' },
+  footerText: { color: COLORS.muted, fontSize: 9, paddingBottom: 7, paddingTop: 7, textAlign: 'center' },
 });

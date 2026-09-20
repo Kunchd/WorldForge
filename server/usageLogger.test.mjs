@@ -9,6 +9,8 @@ test('builds an OpenAI usage record with cached token details', () => {
       id: 'resp_123',
       _request_id: 'req_123',
       model: 'gpt-test',
+      status: 'incomplete',
+      incomplete_details: { reason: 'max_output_tokens' },
       usage: {
         input_tokens: 1_500,
         input_tokens_details: {
@@ -33,6 +35,8 @@ test('builds an OpenAI usage record with cached token details', () => {
     response_id: 'resp_123',
     request_id: 'req_123',
     model: 'gpt-test',
+    status: 'incomplete',
+    incomplete_reason: 'max_output_tokens',
     message_count: 4,
     duration_ms: 321,
     input_tokens: 1_500,

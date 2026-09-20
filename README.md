@@ -1,8 +1,9 @@
 # WorldForge
 
-An Android-first Expo/React Native chatbot that can use either a small Node.js
-proxy or a user's own OpenAI API key. The same app can run on iOS later without
-a rewrite.
+An Android-first Expo/React Native interactive-novel app. Players create a
+setting and high-level plot, then shape an AI-narrated visual-novel-style story
+through their choices. Requests can use either a small Node.js proxy or the
+player's own OpenAI API key.
 
 ## Architecture
 
@@ -51,10 +52,21 @@ npm test           # Test the proxy without calling OpenAI
 
 The proxy health check is available at `http://localhost:3001/health`.
 
+## Creating and playing novels
+
+The home screen is a library of locally saved novels. Select **New novel**, add
+a setting and high-level plot, and optionally provide a title. WorldForge
+injects that brief into `prompt.md` and asks the narrator to generate the first
+playable scene. The setup prompt remains in model context but is hidden from
+the reader view.
+
+Existing histories from the earlier chat-based version are imported into the
+library automatically.
+
 ## Using your own OpenAI key
 
-On the app home screen, choose **My API key**, enter a personal OpenAI API key,
-and select **Save & use key**. The app then posts directly to the OpenAI
+Open **Settings**, choose **My API key**, enter a personal OpenAI API key, and
+select **Save & use key**. The app then posts directly to the OpenAI
 Responses API, so the local proxy does not need to be running. You can switch
 back to **Server proxy**, replace the saved key, or remove it from the same
 screen.
@@ -65,10 +77,11 @@ a client app can still be exposed on a compromised or instrumented device, so
 use a restricted project key with spending limits and prefer the proxy for a
 deployed multi-user service.
 
-## Chat history and usage logs
+## Novel history and usage logs
 
-Chat histories are stored locally on the device with AsyncStorage. AsyncStorage
-is unencrypted, so avoid storing sensitive information in a conversation.
+Novel briefs and story histories are stored locally on the device with
+AsyncStorage. AsyncStorage is unencrypted, so avoid storing sensitive
+information in a story.
 
 After each successful OpenAI response made through the proxy, the proxy appends a JSON line to
 `server/logs/openai-usage.ndjson`. Each record includes total input and output
