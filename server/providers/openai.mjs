@@ -7,7 +7,7 @@ import {
 
 const MAX_OUTPUT_TOKENS = 4_000;
 
-export async function generateOpenAIReply(messages) {
+export async function generateOpenAIReply(messages, model) {
   if (!process.env.OPENAI_API_KEY) {
     const error = new Error(
       'OPENAI_API_KEY is not configured on the local proxy. Add it to .env.local.',
@@ -18,15 +18,11 @@ export async function generateOpenAIReply(messages) {
 
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const startedAt = performance.now();
-  const model = process.env.OPENAI_MODEL || 'gpt-5-mini';
   const response = await client.responses.create({
     model,
     instructions:
       'You are WorldForge, an interactive visual-novel narrator and game master. Follow the story brief in the first user message, preserve continuity, and stop at meaningful player decisions.',
     input: messages,
-    ...(model === 'gpt-5-mini' || model.startsWith('gpt-5-mini-')
-      ? { reasoning: { effort: 'minimal' } }
-      : {}),
     max_output_tokens: MAX_OUTPUT_TOKENS,
     store: false,
   });

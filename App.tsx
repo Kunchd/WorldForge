@@ -16,15 +16,22 @@ import {
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import {
-  ChatApiMode,
+  type ChatApiMode,
+  type ModelId,
   deleteOpenAIApiKey,
   loadChatApiSettings,
   saveChatApiMode,
+  saveModelId,
   saveOpenAIApiKey,
   supportsDirectOpenAI,
 } from './src/lib/apiSettings';
 import { normalizeOpenAIApiKey } from './src/lib/apiKey';
 import { sendChat } from './src/lib/chatApi';
+import {
+  DEFAULT_MODEL_ID,
+  MODEL_OPTIONS,
+  modelLabel,
+} from './src/lib/modelConfig.mjs';
 import { loadNovels, saveNovels } from './src/lib/novelStorage';
 import { buildStoryPrompt } from './src/lib/storyPrompt';
 import { Novel, NovelMessage } from './src/types/novel';
@@ -96,11 +103,15 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [persistenceError, setPersistenceError] = useState<string | null>(null);
   const [apiMode, setApiMode] = useState<ChatApiMode>('proxy');
+  const [modelId, setModelId] = useState<ModelId>(DEFAULT_MODEL_ID);
+  const [pendingModelId, setPendingModelId] = useState<ModelId | null>(null);
   const [pendingApiMode, setPendingApiMode] = useState<ChatApiMode | null>(null);
   const [openAIApiKey, setOpenAIApiKey] = useState<string | null>(null);
   const [apiKeyDraft, setApiKeyDraft] = useState('');
   const [isEditingApiKey, setIsEditingApiKey] = useState(false);
   const [isSavingApiSettings, setIsSavingApiSettings] = useState(false);
+  const [isSavingModel, setIsSavingModel] = useState(false);
+  const [modelSettingsError, setModelSettingsError] = useState<string | null>(null);
   const [apiSettingsError, setApiSettingsError] = useState<string | null>(null);
   const [apiSettingsNotice, setApiSettingsNotice] = useState<string | null>(null);
   const listRef = useRef<FlatList<NovelMessage>>(null);
@@ -128,6 +139,7 @@ export default function App() {
         }
         if (settingsResult.status === 'fulfilled') {
           setApiMode(settingsResult.value.mode);
+          setModelId(settingsResult.value.modelId);
           setOpenAIApiKey(settingsResult.value.openAIApiKey);
         } else {
           const caughtError = settingsResult.reason;
@@ -184,8 +196,8 @@ export default function App() {
 
   function currentTransport() {
     return apiMode === 'direct' && openAIApiKey
-      ? { type: 'openai' as const, apiKey: openAIApiKey }
-      : { type: 'proxy' as const };
+      ? { type: 'openai' as const, apiKey: openAIApiKey, modelId }
+      : { type: 'proxy' as const, modelId };
   }
 
   async function requestStoryReply(
@@ -386,6 +398,75 @@ export default function App() {
         { text: 'Cancel', style: 'cancel' },
         { text: 'Remove', style: 'destructive', onPress: () => void removeOpenAIKey() },
       ],
+    );
+  }
+
+  async function handleSelectModel(nextModelId: ModelId) {
+    if (isSavingModel || nextModelId === modelId) return;
+    setPendingModelId(nextModelId);
+    setIsSavingModel(true);
+    setModelSettingsError(null);
+    try {
+      await saveModelId(nextModelId);
+      setModelId(nextModelId);
+    } catch (caughtError) {
+      setModelSettingsError(
+        caughtError instanceof Error
+          ? caughtError.message
+          : 'Could not save the narrator model.',
+      );
+    } finally {
+      setPendingModelId(null);
+      setIsSavingModel(false);
+    }
+  }
+
+  function renderModelSettings() {
+    const selectedModelId = pendingModelId ?? modelId;
+    return (
+      <View style={styles.connectionCard}>
+        <View style={styles.connectionHeadingRow}>
+          <View style={styles.flex}>
+            <Text style={styles.connectionTitle}>Narrator model</Text>
+            <Text style={styles.connectionDescription}>
+              Choose the storyteller used for every novel.
+            </Text>
+          </View>
+          {isSavingModel ? <ActivityIndicator color={COLORS.accent} /> : null}
+        </View>
+        <View style={styles.modelOptions}>
+          {MODEL_OPTIONS.map((option) => {
+            const isSelected = selectedModelId === option.id;
+            return (
+              <Pressable
+                accessibilityLabel={`${option.label}, ${option.detail}`}
+                accessibilityRole="button"
+                accessibilityState={{ selected: isSelected }}
+                disabled={isSavingModel}
+                key={option.id}
+                onPress={() => void handleSelectModel(option.id)}
+                style={({ pressed }) => [
+                  styles.modelOption,
+                  isSelected && styles.connectionOptionSelected,
+                  pressed && styles.buttonPressed,
+                ]}
+              >
+                <Text style={[styles.optionTitle, isSelected && styles.optionSelectedText]}>
+                  {option.label}
+                </Text>
+                <Text style={styles.optionText}>
+                  {option.detail}{option.id === DEFAULT_MODEL_ID ? ' · Default' : ''}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        {modelSettingsError ? (
+          <View style={styles.settingsError}>
+            <Text style={styles.errorText}>{modelSettingsError}</Text>
+          </View>
+        ) : null}
+      </View>
     );
   }
 
@@ -687,11 +768,12 @@ export default function App() {
         <Header title="Settings" onBack={() => setScreen('library')} />
         <ScrollView contentContainerStyle={styles.settingsContent}>
           <Text style={styles.formEyebrow}>NARRATOR</Text>
-          <Text style={styles.settingsTitle}>Connection settings</Text>
+          <Text style={styles.settingsTitle}>Narrator settings</Text>
           <Text style={styles.formIntro}>
-            Pick the route used for every novel. You can switch at any time
+            Pick a narrator and connection route. You can switch at any time
             without losing your library or story history.
           </Text>
+          {renderModelSettings()}
           {renderApiSettings()}
           <View style={styles.privacyCard}>
             <Text style={styles.privacyTitle}>On-device library</Text>
@@ -720,7 +802,7 @@ export default function App() {
           <View style={styles.readerHeading}>
             <Text numberOfLines={1} style={styles.readerTitle}>{activeNovel.title}</Text>
             <Text style={styles.readerSubtitle}>
-              {apiMode === 'direct' ? 'Direct OpenAI' : 'OpenAI via proxy'}
+              {modelLabel(modelId)} · {apiMode === 'direct' ? 'Direct OpenAI' : 'OpenAI via proxy'}
             </Text>
           </View>
           <View style={styles.headerSpacer} />
@@ -980,6 +1062,11 @@ const styles = StyleSheet.create({
   connectionTitle: { color: COLORS.text, fontSize: 17, fontWeight: '800' },
   connectionDescription: { color: COLORS.muted, fontSize: 13, marginTop: 3 },
   connectionOptions: { flexDirection: 'row', gap: 10, marginTop: 14 },
+  modelOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 14 },
+  modelOption: {
+    borderColor: COLORS.border, borderRadius: 13, borderWidth: 1,
+    flexBasis: '47%', flexGrow: 1, paddingHorizontal: 12, paddingVertical: 12,
+  },
   connectionOption: {
     borderColor: COLORS.border, borderRadius: 13, borderWidth: 1, flex: 1,
     paddingHorizontal: 12, paddingVertical: 12,

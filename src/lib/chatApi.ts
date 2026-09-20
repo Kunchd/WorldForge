@@ -1,14 +1,15 @@
 import { NovelMessage } from '../types/novel';
 import { normalizeOpenAIApiKey } from './apiKey';
+import type { ModelId } from './apiSettings';
+import { DEFAULT_MODEL_ID } from './modelConfig.mjs';
 
 const PROXY_API_URL = process.env.EXPO_PUBLIC_API_URL?.replace(/\/$/, '');
 const OPENAI_API_URL = 'https://api.openai.com/v1/responses';
-const OPENAI_MODEL = 'gpt-5-mini';
-const MAX_OUTPUT_TOKENS = 4_000;
+const MAX_OUTPUT_TOKENS = 10_000;
 
 export type ChatTransport =
-  | { type: 'proxy' }
-  | { type: 'openai'; apiKey: string };
+  | { type: 'proxy'; modelId: ModelId }
+  | { type: 'openai'; apiKey: string; modelId: ModelId };
 
 type ProxyChatResponse = {
   reply?: string;
@@ -47,7 +48,10 @@ type ChatRequest<TResponse> = {
   connectionError: string;
 };
 
-function proxyRequest(messages: NovelMessage[]): ChatRequest<ProxyChatResponse> {
+function proxyRequest(
+  messages: NovelMessage[],
+  modelId: ModelId,
+): ChatRequest<ProxyChatResponse> {
   if (!PROXY_API_URL) {
     throw new Error(
       'Missing EXPO_PUBLIC_API_URL. Copy .env.example to .env.local and set your computer\'s LAN address.',
@@ -58,6 +62,7 @@ function proxyRequest(messages: NovelMessage[]): ChatRequest<ProxyChatResponse> 
     url: `${PROXY_API_URL}/api/chat`,
     body: {
       provider: 'openai',
+      model: modelId,
       messages: messages.map(({ role, content }) => ({ role, content })),
     },
     readReply: (data) => data.reply?.trim(),
@@ -70,6 +75,7 @@ function proxyRequest(messages: NovelMessage[]): ChatRequest<ProxyChatResponse> 
 function directOpenAIRequest(
   messages: NovelMessage[],
   apiKey: string,
+  modelId: ModelId,
 ): ChatRequest<OpenAIResponse> {
   const normalizedApiKey = normalizeOpenAIApiKey(apiKey);
   if (!normalizedApiKey) {
@@ -80,7 +86,7 @@ function directOpenAIRequest(
     url: OPENAI_API_URL,
     headers: { Authorization: `Bearer ${normalizedApiKey}` },
     body: {
-      model: OPENAI_MODEL,
+      model: modelId,
       instructions:
         'You are WorldForge, an interactive visual-novel narrator and game master. Follow the story brief in the first user message, preserve continuity, and stop at meaningful player decisions.',
       input: messages.map(({ role, content }) => ({ role, content })),
@@ -159,11 +165,13 @@ async function postChat<TResponse>(
 
 export async function sendChat(
   messages: NovelMessage[],
-  transport: ChatTransport = { type: 'proxy' },
+  transport: ChatTransport = { type: 'proxy', modelId: DEFAULT_MODEL_ID },
 ): Promise<string> {
   if (transport.type === 'openai') {
-    return postChat(directOpenAIRequest(messages, transport.apiKey));
+    return postChat(
+      directOpenAIRequest(messages, transport.apiKey, transport.modelId),
+    );
   }
 
-  return postChat(proxyRequest(messages));
+  return postChat(proxyRequest(messages, transport.modelId));
 }

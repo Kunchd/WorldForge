@@ -1,6 +1,10 @@
 import { createServer } from 'node:http';
 
 import { generateOpenAIReply } from './providers/openai.mjs';
+import {
+  DEFAULT_MODEL_ID,
+  isModelId,
+} from '../src/lib/modelConfig.mjs';
 
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_MESSAGES = 30;
@@ -75,6 +79,16 @@ function validateMessages(value) {
   return messages;
 }
 
+function validateModel(value) {
+  const model = value ?? DEFAULT_MODEL_ID;
+  if (!isModelId(model)) {
+    const error = new Error('Unsupported model.');
+    error.statusCode = 400;
+    throw error;
+  }
+  return model;
+}
+
 export function createChatServer({ generateReply = generateOpenAIReply } = {}) {
   return createServer(async (request, response) => {
     if (request.method === 'OPTIONS') {
@@ -101,7 +115,8 @@ export function createChatServer({ generateReply = generateOpenAIReply } = {}) {
       }
 
       const messages = validateMessages(body.messages);
-      const reply = await generateReply(messages);
+      const model = validateModel(body.model);
+      const reply = await generateReply(messages, model);
       writeJson(response, 200, { reply });
     } catch (error) {
       const statusCode = Number.isInteger(error?.statusCode)

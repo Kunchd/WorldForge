@@ -63,6 +63,18 @@ the reader view.
 Existing histories from the earlier chat-based version are imported into the
 library automatically.
 
+## Choosing a narrator model
+
+Open **Settings** and select one of the narrator models. The choice is saved on
+the device and applies to both proxy and direct-key requests:
+
+- **Celestia**
+- **Mythril**
+- **Gold**
+- **Blue**
+
+The shipped catalog and default are defined in `src/lib/modelConfig.mjs`.
+
 ## Using your own OpenAI key
 
 Open **Settings**, choose **My API key**, enter a personal OpenAI API key, and
@@ -95,7 +107,6 @@ are not included in this log.
 Copy `.env.example` to `.env.local` on another machine. `.env.local` is intentionally ignored by Git.
 
 - `OPENAI_API_KEY`: Secret server-side API key.
-- `OPENAI_MODEL`: OpenAI model ID; defaults to `gpt-5-mini`.
 - `PORT`: Proxy port; defaults to `3001`.
 - `EXPO_PUBLIC_API_URL`: URL the phone uses to reach the proxy.
 
