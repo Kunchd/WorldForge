@@ -1,15 +1,23 @@
 # WorldForge mobile chat
 
-An Android-first Expo/React Native chatbot with a small local Node.js proxy for OpenAI. The same app can run on iOS later without a rewrite.
+An Android-first Expo/React Native chatbot that can use either a small Node.js
+proxy or a user's own OpenAI API key. The same app can run on iOS later without
+a rewrite.
 
 ## Architecture
 
 ```text
-Android / iOS app  ->  local Node proxy  ->  OpenAI Responses API
-   no secret key          key stays here
+                         -> local Node proxy -> OpenAI Responses API
+Android / iOS app ------|
+                         -> direct request --> OpenAI Responses API
+                            user's own key
 ```
 
-Do not place `OPENAI_API_KEY` in the mobile app or in any `EXPO_PUBLIC_*` variable. Public Expo variables are bundled into the installed app.
+The proxy remains the default. Never place a shared or service
+`OPENAI_API_KEY` in the mobile source or in an `EXPO_PUBLIC_*` variable; public
+Expo variables are bundled into the installed app. A personal key entered in
+the app is stored with Expo SecureStore (Android Keystore or iOS Keychain) and
+is sent only to OpenAI while direct mode is selected.
 
 ## First run on Android
 
@@ -43,16 +51,31 @@ npm test           # Test the proxy without calling OpenAI
 
 The proxy health check is available at `http://localhost:3001/health`.
 
+## Using your own OpenAI key
+
+On the app home screen, choose **My API key**, enter a personal OpenAI API key,
+and select **Save & use key**. The app then posts directly to the OpenAI
+Responses API, so the local proxy does not need to be running. You can switch
+back to **Server proxy**, replace the saved key, or remove it from the same
+screen.
+
+Direct-key mode is available on Android and iOS. The web build always uses the
+proxy because Expo SecureStore does not provide protected web storage. A key in
+a client app can still be exposed on a compromised or instrumented device, so
+use a restricted project key with spending limits and prefer the proxy for a
+deployed multi-user service.
+
 ## Chat history and usage logs
 
 Chat histories are stored locally on the device with AsyncStorage. AsyncStorage
 is unencrypted, so avoid storing sensitive information in a conversation.
 
-After each successful OpenAI response, the proxy appends a JSON line to
+After each successful OpenAI response made through the proxy, the proxy appends a JSON line to
 `server/logs/openai-usage.ndjson`. Each record includes total input and output
 tokens, cached and uncached input tokens, cache hit rate, model, response ID,
 and request duration. Message contents are not logged, and `server/logs/` is
-ignored by Git.
+ignored by Git. Direct requests do not pass through the server and therefore
+are not included in this log.
 
 ## Environment variables
 

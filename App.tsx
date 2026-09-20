@@ -2,6 +2,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   KeyboardAvoidingView,
   Platform,
@@ -16,6 +17,15 @@ import {
   SafeAreaView,
 } from 'react-native-safe-area-context';
 
+import {
+  ChatApiMode,
+  deleteOpenAIApiKey,
+  loadChatApiSettings,
+  saveChatApiMode,
+  saveOpenAIApiKey,
+  supportsDirectOpenAI,
+} from './src/lib/apiSettings';
+import { normalizeOpenAIApiKey } from './src/lib/apiKey';
 import { sendChat } from './src/lib/chatApi';
 import { loadChats, saveChats } from './src/lib/chatStorage';
 import { Chat, ChatMessage } from './src/types/chat';
@@ -92,7 +102,18 @@ export default function App() {
   const [persistenceVersion, setPersistenceVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [persistenceError, setPersistenceError] = useState<string | null>(null);
+  const [apiMode, setApiMode] = useState<ChatApiMode>('proxy');
+  const [pendingApiMode, setPendingApiMode] = useState<ChatApiMode | null>(
+    null,
+  );
+  const [openAIApiKey, setOpenAIApiKey] = useState<string | null>(null);
+  const [apiKeyDraft, setApiKeyDraft] = useState('');
+  const [isEditingApiKey, setIsEditingApiKey] = useState(false);
+  const [isSavingApiSettings, setIsSavingApiSettings] = useState(false);
+  const [apiSettingsError, setApiSettingsError] = useState<string | null>(null);
+  const [apiSettingsNotice, setApiSettingsNotice] = useState<string | null>(null);
   const listRef = useRef<FlatList<ChatMessage>>(null);
+  const apiKeyInputRef = useRef<TextInput>(null);
   const storageWriteQueue = useRef<Promise<void>>(Promise.resolve());
 
   const activeChat = chats.find((chat) => chat.id === activeChatId) ?? null;
@@ -100,26 +121,181 @@ export default function App() {
   useEffect(() => {
     let isMounted = true;
 
-    loadChats()
-      .then((storedChats) => {
-        if (isMounted) setChats(storedChats);
-      })
-      .catch((caughtError: unknown) => {
+    Promise.allSettled([loadChats(), loadChatApiSettings()]).then(
+      ([chatsResult, settingsResult]) => {
         if (!isMounted) return;
-        setPersistenceError(
-          caughtError instanceof Error
-            ? `Could not load saved chats: ${caughtError.message}`
-            : 'Could not load saved chats.',
-        );
-      })
-      .finally(() => {
-        if (isMounted) setIsHydrating(false);
-      });
+
+        if (chatsResult.status === 'fulfilled') {
+          setChats(chatsResult.value);
+        } else {
+          const caughtError = chatsResult.reason;
+          setPersistenceError(
+            caughtError instanceof Error
+              ? `Could not load saved chats: ${caughtError.message}`
+              : 'Could not load saved chats.',
+          );
+        }
+
+        if (settingsResult.status === 'fulfilled') {
+          setApiMode(settingsResult.value.mode);
+          setOpenAIApiKey(settingsResult.value.openAIApiKey);
+        } else {
+          const caughtError = settingsResult.reason;
+          setApiSettingsError(
+            caughtError instanceof Error
+              ? `Could not load API settings: ${caughtError.message}`
+              : 'Could not load API settings.',
+          );
+        }
+
+        setIsHydrating(false);
+      },
+    );
 
     return () => {
       isMounted = false;
     };
   }, []);
+
+  async function handleUseProxy() {
+    if (isSavingApiSettings) return;
+    setPendingApiMode('proxy');
+    setIsSavingApiSettings(true);
+    setApiSettingsError(null);
+    setApiSettingsNotice(null);
+
+    try {
+      await saveChatApiMode('proxy');
+      setApiMode('proxy');
+      setPendingApiMode(null);
+      setIsEditingApiKey(false);
+      setApiSettingsNotice('Messages will use the configured proxy.');
+    } catch (caughtError) {
+      setApiSettingsError(
+        caughtError instanceof Error
+          ? caughtError.message
+          : 'Could not save the API mode.',
+      );
+    } finally {
+      setPendingApiMode(null);
+      setIsSavingApiSettings(false);
+    }
+  }
+
+  async function handleUseDirectOpenAI() {
+    if (isSavingApiSettings) return;
+    setApiSettingsError(null);
+    setApiSettingsNotice(null);
+
+    if (!supportsDirectOpenAI()) {
+      setApiSettingsError(
+        'Direct OpenAI access is available in the Android and iOS apps only.',
+      );
+      return;
+    }
+
+    if (!openAIApiKey) {
+      setPendingApiMode('direct');
+      setIsEditingApiKey(true);
+      setTimeout(() => apiKeyInputRef.current?.focus(), 0);
+      return;
+    }
+
+    setPendingApiMode('direct');
+    setIsSavingApiSettings(true);
+    try {
+      await saveChatApiMode('direct');
+      setApiMode('direct');
+      setPendingApiMode(null);
+      setApiSettingsNotice('Messages will be sent directly to OpenAI.');
+    } catch (caughtError) {
+      setApiSettingsError(
+        caughtError instanceof Error
+          ? caughtError.message
+          : 'Could not save the API mode.',
+      );
+    } finally {
+      setPendingApiMode(null);
+      setIsSavingApiSettings(false);
+    }
+  }
+
+  async function handleSaveOpenAIKey() {
+    if (isSavingApiSettings) return;
+    const normalizedApiKey = normalizeOpenAIApiKey(apiKeyDraft);
+    if (!normalizedApiKey) {
+      setApiSettingsError('Enter an OpenAI API key.');
+      return;
+    }
+
+    setIsSavingApiSettings(true);
+    setPendingApiMode('direct');
+    setApiSettingsError(null);
+    setApiSettingsNotice(null);
+
+    try {
+      const savedApiKey = await saveOpenAIApiKey(normalizedApiKey);
+      setOpenAIApiKey(savedApiKey);
+      await saveChatApiMode('direct');
+      setApiMode('direct');
+      setPendingApiMode(null);
+      setApiKeyDraft('');
+      setIsEditingApiKey(false);
+      setApiSettingsNotice(
+        'API key saved. Messages will be sent directly to OpenAI.',
+      );
+    } catch (caughtError) {
+      setApiSettingsError(
+        caughtError instanceof Error
+          ? caughtError.message
+          : 'Could not save the API key.',
+      );
+    } finally {
+      setIsSavingApiSettings(false);
+    }
+  }
+
+  async function removeOpenAIKey() {
+    setIsSavingApiSettings(true);
+    setPendingApiMode('proxy');
+    setApiSettingsError(null);
+    setApiSettingsNotice(null);
+
+    try {
+      await deleteOpenAIApiKey();
+      await saveChatApiMode('proxy');
+      setOpenAIApiKey(null);
+      setApiMode('proxy');
+      setPendingApiMode(null);
+      setApiKeyDraft('');
+      setIsEditingApiKey(false);
+      setApiSettingsNotice('API key removed. Messages will use the proxy.');
+    } catch (caughtError) {
+      setPendingApiMode(null);
+      setApiSettingsError(
+        caughtError instanceof Error
+          ? caughtError.message
+          : 'Could not remove the API key.',
+      );
+    } finally {
+      setIsSavingApiSettings(false);
+    }
+  }
+
+  function handleRemoveOpenAIKey() {
+    Alert.alert(
+      'Remove OpenAI API key?',
+      'WorldForge will switch back to the configured proxy.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: () => void removeOpenAIKey(),
+        },
+      ],
+    );
+  }
 
   useEffect(() => {
     if (isHydrating || persistenceVersion === 0) return;
@@ -209,7 +385,11 @@ export default function App() {
     setIsSending(true);
 
     try {
-      const reply = await sendChat(conversation);
+      const transport =
+        apiMode === 'direct' && openAIApiKey
+          ? { type: 'openai' as const, apiKey: openAIApiKey }
+          : { type: 'proxy' as const };
+      const reply = await sendChat(conversation, transport);
       updateChat(chatId, (chat) => ({
         ...chat,
         messages: [
@@ -231,6 +411,184 @@ export default function App() {
     } finally {
       setIsSending(false);
     }
+  }
+
+  function renderApiSettings() {
+    const directSupported = supportsDirectOpenAI();
+    const selectedApiMode = pendingApiMode ?? apiMode;
+    const hasApiKeyDraft = Boolean(normalizeOpenAIApiKey(apiKeyDraft));
+
+    return (
+      <View style={styles.connectionCard}>
+        <View style={styles.connectionHeadingRow}>
+          <View style={styles.connectionHeadingText}>
+            <Text style={styles.connectionTitle}>AI connection</Text>
+            <Text style={styles.connectionDescription}>
+              Choose where the app sends chat requests.
+            </Text>
+          </View>
+          {isSavingApiSettings ? (
+            <ActivityIndicator color={COLORS.accent} size="small" />
+          ) : null}
+        </View>
+
+        <View style={styles.connectionOptions}>
+          <Pressable
+            accessibilityLabel="Use the configured server proxy"
+            accessibilityRole="button"
+            accessibilityState={{ selected: selectedApiMode === 'proxy' }}
+            disabled={isSavingApiSettings}
+            onPress={() => void handleUseProxy()}
+            style={({ pressed }) => [
+              styles.connectionOption,
+              selectedApiMode === 'proxy' && styles.connectionOptionSelected,
+              pressed && styles.buttonPressed,
+            ]}
+          >
+            <Text
+              style={[
+                styles.connectionOptionTitle,
+                selectedApiMode === 'proxy' &&
+                  styles.connectionOptionTitleSelected,
+              ]}
+            >
+              Server proxy
+            </Text>
+            <Text style={styles.connectionOptionText}>Uses the app service</Text>
+          </Pressable>
+          <Pressable
+            accessibilityLabel="Use my OpenAI API key"
+            accessibilityRole="button"
+            accessibilityState={{ selected: selectedApiMode === 'direct' }}
+            disabled={isSavingApiSettings}
+            onPress={() => void handleUseDirectOpenAI()}
+            style={({ pressed }) => [
+              styles.connectionOption,
+              selectedApiMode === 'direct' && styles.connectionOptionSelected,
+              pressed && styles.buttonPressed,
+            ]}
+          >
+            <Text
+              style={[
+                styles.connectionOptionTitle,
+                selectedApiMode === 'direct' &&
+                  styles.connectionOptionTitleSelected,
+              ]}
+            >
+              My API key
+            </Text>
+            <Text style={styles.connectionOptionText}>Connects to OpenAI</Text>
+          </Pressable>
+        </View>
+
+        {!directSupported ? (
+          <Text style={styles.connectionHint}>
+            Direct access is available in the Android and iOS apps. The web app
+            continues to use the proxy.
+          </Text>
+        ) : !openAIApiKey || isEditingApiKey ? (
+          <View style={styles.apiKeyEditor}>
+            <TextInput
+              ref={apiKeyInputRef}
+              accessibilityLabel="OpenAI API key"
+              autoCapitalize="none"
+              autoComplete="off"
+              autoCorrect={false}
+              editable={!isSavingApiSettings}
+              onChangeText={setApiKeyDraft}
+              onSubmitEditing={() => void handleSaveOpenAIKey()}
+              placeholder="OpenAI API key"
+              placeholderTextColor={COLORS.muted}
+              returnKeyType="done"
+              secureTextEntry
+              style={styles.apiKeyInput}
+              value={apiKeyDraft}
+            />
+            <View style={styles.apiKeyActions}>
+              {openAIApiKey ? (
+                <Pressable
+                  disabled={isSavingApiSettings}
+                  onPress={() => {
+                    setApiKeyDraft('');
+                    setIsEditingApiKey(false);
+                    setApiSettingsError(null);
+                  }}
+                  style={({ pressed }) => [
+                    styles.secondaryButton,
+                    pressed && styles.buttonPressed,
+                  ]}
+                >
+                  <Text style={styles.secondaryButtonText}>Cancel</Text>
+                </Pressable>
+              ) : null}
+              <Pressable
+                accessibilityLabel="Save OpenAI API key"
+                disabled={!hasApiKeyDraft || isSavingApiSettings}
+                onPress={() => void handleSaveOpenAIKey()}
+                style={({ pressed }) => [
+                  styles.saveKeyButton,
+                  (!hasApiKeyDraft || isSavingApiSettings) &&
+                    styles.buttonDisabled,
+                  pressed && styles.buttonPressed,
+                ]}
+              >
+                <Text style={styles.primaryButtonText}>Save & use key</Text>
+              </Pressable>
+            </View>
+            <Text style={styles.connectionHint}>
+              Encrypted in this device's system storage and sent only to OpenAI
+              when direct mode is selected.
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.savedKeyRow}>
+            <View style={styles.savedKeyText}>
+              <Text style={styles.savedKeyTitle}>API key saved securely</Text>
+              <Text style={styles.connectionHint}>
+                The saved key is never sent to the WorldForge proxy.
+              </Text>
+            </View>
+            <Pressable
+              disabled={isSavingApiSettings}
+              onPress={() => {
+                setApiKeyDraft('');
+                setIsEditingApiKey(true);
+                setApiSettingsError(null);
+                setApiSettingsNotice(null);
+                setTimeout(() => apiKeyInputRef.current?.focus(), 0);
+              }}
+              style={({ pressed }) => [
+                styles.keyActionButton,
+                pressed && styles.buttonPressed,
+              ]}
+            >
+              <Text style={styles.keyActionText}>Replace</Text>
+            </Pressable>
+            <Pressable
+              disabled={isSavingApiSettings}
+              onPress={handleRemoveOpenAIKey}
+              style={({ pressed }) => [
+                styles.keyActionButton,
+                pressed && styles.buttonPressed,
+              ]}
+            >
+              <Text style={styles.removeKeyText}>Remove</Text>
+            </Pressable>
+          </View>
+        )}
+
+        {apiSettingsError ? (
+          <View style={styles.settingsErrorBanner}>
+            <Text style={styles.errorText}>{apiSettingsError}</Text>
+          </View>
+        ) : null}
+        {apiSettingsNotice ? (
+          <View style={styles.noticeBanner}>
+            <Text style={styles.noticeText}>{apiSettingsNotice}</Text>
+          </View>
+        ) : null}
+      </View>
+    );
   }
 
   function renderHome() {
@@ -261,6 +619,8 @@ export default function App() {
             <Text style={styles.errorText}>{persistenceError}</Text>
           </View>
         ) : null}
+
+        {renderApiSettings()}
 
         {chats.length === 0 ? (
           <View style={styles.emptyState}>
@@ -338,7 +698,9 @@ export default function App() {
             <Text numberOfLines={1} style={styles.chatTitle}>
               {activeChat.title}
             </Text>
-            <Text style={styles.chatHeadingSubtitle}>OpenAI</Text>
+            <Text style={styles.chatHeadingSubtitle}>
+              {apiMode === 'direct' ? 'Direct OpenAI' : 'OpenAI via proxy'}
+            </Text>
           </View>
           <Pressable
             accessibilityLabel="Create a new chat"
@@ -357,7 +719,11 @@ export default function App() {
         <View style={styles.providerRow}>
           <View style={styles.statusDot} />
           <Text style={styles.providerText}>OpenAI</Text>
-          <Text style={styles.providerModel}>via your local proxy</Text>
+          <Text style={styles.providerModel}>
+            {apiMode === 'direct'
+              ? 'using your saved API key'
+              : 'via the configured proxy'}
+          </Text>
         </View>
 
         <FlatList
@@ -520,6 +886,111 @@ const styles = StyleSheet.create({
   buttonPressed: { opacity: 0.7 },
   buttonDisabled: { opacity: 0.4 },
   homeError: { marginHorizontal: 16, marginTop: 16 },
+  connectionCard: {
+    backgroundColor: COLORS.panel,
+    borderColor: COLORS.border,
+    borderRadius: 18,
+    borderWidth: 1,
+    marginHorizontal: 16,
+    marginTop: 16,
+    padding: 16,
+  },
+  connectionHeadingRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 12,
+    justifyContent: 'space-between',
+  },
+  connectionHeadingText: { flex: 1 },
+  connectionTitle: { color: COLORS.text, fontSize: 17, fontWeight: '700' },
+  connectionDescription: { color: COLORS.muted, fontSize: 13, marginTop: 3 },
+  connectionOptions: { flexDirection: 'row', gap: 10, marginTop: 14 },
+  connectionOption: {
+    borderColor: COLORS.border,
+    borderRadius: 13,
+    borderWidth: 1,
+    flex: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+  },
+  connectionOptionSelected: {
+    backgroundColor: COLORS.accentDark,
+    borderColor: COLORS.accent,
+  },
+  connectionOptionTitle: {
+    color: COLORS.text,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  connectionOptionTitleSelected: { color: COLORS.accent },
+  connectionOptionText: { color: COLORS.muted, fontSize: 11, marginTop: 3 },
+  connectionHint: {
+    color: COLORS.muted,
+    flexShrink: 1,
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 9,
+  },
+  apiKeyEditor: { marginTop: 12 },
+  apiKeyInput: {
+    backgroundColor: COLORS.background,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    borderWidth: 1,
+    color: COLORS.text,
+    fontSize: 14,
+    paddingHorizontal: 13,
+    paddingVertical: 12,
+  },
+  apiKeyActions: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 10,
+    justifyContent: 'flex-end',
+    marginTop: 10,
+  },
+  secondaryButton: {
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  secondaryButtonText: { color: COLORS.text, fontSize: 13, fontWeight: '700' },
+  saveKeyButton: {
+    backgroundColor: COLORS.accent,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  savedKeyRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+  },
+  savedKeyText: { flex: 1 },
+  savedKeyTitle: { color: COLORS.text, fontSize: 13, fontWeight: '700' },
+  keyActionButton: { paddingHorizontal: 5, paddingVertical: 8 },
+  keyActionText: { color: COLORS.accent, fontSize: 12, fontWeight: '700' },
+  removeKeyText: { color: COLORS.danger, fontSize: 12, fontWeight: '700' },
+  settingsErrorBanner: {
+    backgroundColor: COLORS.dangerBackground,
+    borderColor: '#744049',
+    borderRadius: 12,
+    borderWidth: 1,
+    marginTop: 12,
+    padding: 10,
+  },
+  noticeBanner: {
+    backgroundColor: COLORS.accentDark,
+    borderColor: '#236954',
+    borderRadius: 12,
+    borderWidth: 1,
+    marginTop: 12,
+    padding: 10,
+  },
+  noticeText: { color: '#9BF2CF', fontSize: 12, lineHeight: 17 },
   emptyState: {
     alignItems: 'center',
     flex: 1,

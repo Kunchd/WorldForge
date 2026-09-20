@@ -1,53 +1,151 @@
 import { ChatMessage } from '../types/chat';
+import { normalizeOpenAIApiKey } from './apiKey';
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL?.replace(/\/$/, '');
+const PROXY_API_URL = process.env.EXPO_PUBLIC_API_URL?.replace(/\/$/, '');
+const OPENAI_API_URL = 'https://api.openai.com/v1/responses';
+const OPENAI_MODEL = 'gpt-5-mini';
 
-type ChatResponse = {
+export type ChatTransport =
+  | { type: 'proxy' }
+  | { type: 'openai'; apiKey: string };
+
+type ProxyChatResponse = {
   reply?: string;
   error?: string;
 };
 
-export async function sendChat(messages: ChatMessage[]): Promise<string> {
-  if (!API_URL) {
+type OpenAIResponse = {
+  output_text?: string;
+  output?: Array<{
+    type?: string;
+    content?: Array<{ type?: string; text?: string }>;
+  }>;
+  error?: { message?: string };
+};
+
+type ChatRequest<TResponse> = {
+  url: string;
+  headers?: Record<string, string>;
+  body: unknown;
+  readReply: (data: TResponse) => string | undefined;
+  readError: (data: TResponse) => string | undefined;
+  connectionError: string;
+};
+
+function proxyRequest(messages: ChatMessage[]): ChatRequest<ProxyChatResponse> {
+  if (!PROXY_API_URL) {
     throw new Error(
       'Missing EXPO_PUBLIC_API_URL. Copy .env.example to .env.local and set your computer\'s LAN address.',
     );
   }
 
+  return {
+    url: `${PROXY_API_URL}/api/chat`,
+    body: {
+      provider: 'openai',
+      messages: messages.map(({ role, content }) => ({ role, content })),
+    },
+    readReply: (data) => data.reply?.trim(),
+    readError: (data) => data.error,
+    connectionError:
+      'Could not reach the proxy. Confirm both devices share Wi-Fi and the server is running.',
+  };
+}
+
+function directOpenAIRequest(
+  messages: ChatMessage[],
+  apiKey: string,
+): ChatRequest<OpenAIResponse> {
+  const normalizedApiKey = normalizeOpenAIApiKey(apiKey);
+  if (!normalizedApiKey) {
+    throw new Error('The saved OpenAI API key is empty. Add it again.');
+  }
+
+  return {
+    url: OPENAI_API_URL,
+    headers: { Authorization: `Bearer ${normalizedApiKey}` },
+    body: {
+      model: OPENAI_MODEL,
+      instructions:
+        'You are WorldForge, a concise and thoughtful assistant. Be helpful, accurate, and transparent about uncertainty.',
+      input: messages.map(({ role, content }) => ({ role, content })),
+      max_output_tokens: 1000,
+      store: false,
+    },
+    readReply: (data) => {
+      const directOutput = data.output_text?.trim();
+      if (directOutput) return directOutput;
+
+      const outputText = data.output
+        ?.flatMap((item) => item.content ?? [])
+        .filter((item) => item.type === 'output_text')
+        .map((item) => item.text?.trim())
+        .filter((text): text is string => Boolean(text))
+        .join('\n');
+      return outputText || undefined;
+    },
+    readError: (data) => data.error?.message,
+    connectionError:
+      'Could not reach OpenAI. Check your internet connection and try again.',
+  };
+}
+
+async function postChat<TResponse>(
+  request: ChatRequest<TResponse>,
+): Promise<string> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 60_000);
 
   try {
-    const response = await fetch(`${API_URL}/api/chat`, {
+    const response = await fetch(request.url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        provider: 'openai',
-        messages: messages.map(({ role, content }) => ({ role, content })),
-      }),
+      headers: {
+        'Content-Type': 'application/json',
+        ...request.headers,
+      },
+      body: JSON.stringify(request.body),
       signal: controller.signal,
     });
-    const data = (await response.json()) as ChatResponse;
+    const responseText = await response.text();
+    let data: TResponse;
+
+    try {
+      data = JSON.parse(responseText) as TResponse;
+    } catch {
+      throw new Error(`The service returned an invalid response (${response.status}).`);
+    }
 
     if (!response.ok) {
-      throw new Error(data.error ?? `Request failed (${response.status}).`);
+      throw new Error(
+        request.readError(data) ?? `Request failed (${response.status}).`,
+      );
     }
-    if (!data.reply) {
+    const reply = request.readReply(data);
+    if (!reply) {
       throw new Error('The model returned an empty response.');
     }
 
-    return data.reply;
+    return reply;
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
-      throw new Error('The request timed out. Check the proxy and try again.');
+      throw new Error('The request timed out. Please try again.');
     }
     if (error instanceof TypeError) {
-      throw new Error(
-        'Could not reach the local proxy. Confirm both devices share Wi-Fi and the server is running.',
-      );
+      throw new Error(request.connectionError);
     }
     throw error;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export async function sendChat(
+  messages: ChatMessage[],
+  transport: ChatTransport = { type: 'proxy' },
+): Promise<string> {
+  if (transport.type === 'openai') {
+    return postChat(directOpenAIRequest(messages, transport.apiKey));
+  }
+
+  return postChat(proxyRequest(messages));
 }
