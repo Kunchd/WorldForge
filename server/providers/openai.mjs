@@ -1,5 +1,10 @@
 import OpenAI from 'openai';
 
+import {
+  appendOpenAIUsage,
+  buildOpenAIUsageRecord,
+} from '../usageLogger.mjs';
+
 export async function generateOpenAIReply(messages) {
   if (!process.env.OPENAI_API_KEY) {
     const error = new Error(
@@ -10,6 +15,7 @@ export async function generateOpenAIReply(messages) {
   }
 
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const startedAt = performance.now();
   const response = await client.responses.create({
     model: process.env.OPENAI_MODEL || 'gpt-5-mini',
     instructions:
@@ -24,6 +30,16 @@ export async function generateOpenAIReply(messages) {
     const error = new Error('OpenAI returned an empty response.');
     error.statusCode = 502;
     throw error;
+  }
+
+  const usageRecord = buildOpenAIUsageRecord(response, {
+    durationMs: Math.round(performance.now() - startedAt),
+    messageCount: messages.length,
+  });
+  try {
+    await appendOpenAIUsage(usageRecord);
+  } catch (error) {
+    console.error('Could not write the OpenAI usage log.', error);
   }
 
   return reply;

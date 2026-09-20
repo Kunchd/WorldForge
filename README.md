@@ -43,6 +43,17 @@ npm test           # Test the proxy without calling OpenAI
 
 The proxy health check is available at `http://localhost:3001/health`.
 
+## Chat history and usage logs
+
+Chat histories are stored locally on the device with AsyncStorage. AsyncStorage
+is unencrypted, so avoid storing sensitive information in a conversation.
+
+After each successful OpenAI response, the proxy appends a JSON line to
+`server/logs/openai-usage.ndjson`. Each record includes total input and output
+tokens, cached and uncached input tokens, cache hit rate, model, response ID,
+and request duration. Message contents are not logged, and `server/logs/` is
+ignored by Git.
+
 ## Environment variables
 
 Copy `.env.example` to `.env.local` on another machine. `.env.local` is intentionally ignored by Git.
@@ -56,6 +67,5 @@ Copy `.env.example` to `.env.local` on another machine. `.env.local` is intentio
 
 - Add Anthropic as a second implementation under `server/providers/`.
 - Add streamed responses.
-- Store conversations locally.
 - Move the proxy to a hosted backend before distributing the app.
 - Replace Expo Go with an Expo development build when native dependencies require it.
