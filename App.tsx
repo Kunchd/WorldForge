@@ -1,5 +1,8 @@
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
+import Markdown, {
+  type MarkdownStyleMap,
+} from '@ronradtke/react-native-markdown-display';
 import {
   ActivityIndicator,
   Alert,
@@ -115,12 +118,15 @@ export default function App() {
   const [apiSettingsError, setApiSettingsError] = useState<string | null>(null);
   const [apiSettingsNotice, setApiSettingsNotice] = useState<string | null>(null);
   const listRef = useRef<FlatList<NovelMessage>>(null);
+  const lastAutoScrolledUserIdRef = useRef<string | null>(null);
+  const scrollRetryCountRef = useRef(0);
   const apiKeyInputRef = useRef<TextInput>(null);
   const storageWriteQueue = useRef<Promise<void>>(Promise.resolve());
 
   const activeNovel = novels.find((novel) => novel.id === activeNovelId) ?? null;
   const visibleMessages =
     activeNovel?.messages.filter((message) => !message.isSetup) ?? [];
+  const latestVisibleMessage = visibleMessages[visibleMessages.length - 1];
 
   useEffect(() => {
     let isMounted = true;
@@ -173,13 +179,49 @@ export default function App() {
   }, [isHydrating, novels, persistenceVersion]);
 
   useEffect(() => {
-    if (!activeNovel) return;
+    if (!activeNovelId) return;
     const timer = setTimeout(
-      () => listRef.current?.scrollToEnd({ animated: true }),
+      () => listRef.current?.scrollToEnd({ animated: false }),
       80,
     );
     return () => clearTimeout(timer);
-  }, [activeNovel?.messages, isSending]);
+  }, [activeNovelId]);
+
+  useEffect(() => {
+    if (
+      latestVisibleMessage?.role !== 'user' ||
+      latestVisibleMessage.id === lastAutoScrolledUserIdRef.current
+    ) {
+      return;
+    }
+
+    lastAutoScrolledUserIdRef.current = latestVisibleMessage.id;
+    scrollRetryCountRef.current = 0;
+    listRef.current?.scrollToIndex({
+      animated: true,
+      index: visibleMessages.length - 1,
+      viewPosition: 1,
+    });
+  }, [activeNovelId, latestVisibleMessage?.id, latestVisibleMessage?.role, visibleMessages.length]);
+
+  function handleScrollToIndexFailed({
+    averageItemLength,
+    index,
+  }: {
+    averageItemLength: number;
+    index: number;
+  }) {
+    if (scrollRetryCountRef.current >= 1) return;
+    scrollRetryCountRef.current += 1;
+    listRef.current?.scrollToOffset({
+      animated: false,
+      offset: averageItemLength * index,
+    });
+    setTimeout(
+      () => listRef.current?.scrollToIndex({ animated: true, index, viewPosition: 1 }),
+      80,
+    );
+  }
 
   function updateNovels(updater: (current: Novel[]) => Novel[]) {
     setNovels(updater);
@@ -816,6 +858,7 @@ export default function App() {
           data={visibleMessages}
           keyExtractor={(message) => message.id}
           keyboardShouldPersistTaps="handled"
+          onScrollToIndexFailed={handleScrollToIndexFailed}
           renderItem={({ item }) => (
             <View style={[styles.messageRow, item.role === 'user' && styles.userMessageRow]}>
               <View style={[
@@ -825,7 +868,9 @@ export default function App() {
                 <Text style={[styles.messageLabel, item.role === 'user' && styles.userMessageLabel]}>
                   {item.role === 'user' ? 'YOUR CHOICE' : 'NARRATOR'}
                 </Text>
-                <Text style={styles.messageText}>{item.content}</Text>
+                <Markdown colorScheme="dark" style={markdownStyles}>
+                  {item.content}
+                </Markdown>
               </View>
             </View>
           )}
@@ -933,6 +978,88 @@ function FieldLabel({ title, help }: { title: string; help: string }) {
     </View>
   );
 }
+
+const markdownStyles: MarkdownStyleMap = {
+  body: {
+    color: COLORS.text,
+    fontSize: 16,
+    lineHeight: 24,
+  },
+  paragraph: {
+    marginBottom: 8,
+    marginTop: 0,
+  },
+  heading1: {
+    color: COLORS.text,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    fontSize: 24,
+    fontWeight: '700',
+    lineHeight: 30,
+    marginBottom: 10,
+  },
+  heading2: {
+    color: COLORS.text,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    fontSize: 21,
+    fontWeight: '700',
+    lineHeight: 27,
+    marginBottom: 8,
+  },
+  heading3: {
+    color: COLORS.text,
+    fontSize: 18,
+    fontWeight: '700',
+    lineHeight: 24,
+    marginBottom: 6,
+  },
+  strong: { fontWeight: '800' },
+  em: { fontStyle: 'italic' },
+  link: { color: COLORS.accent, textDecorationLine: 'underline' },
+  blockquote: {
+    backgroundColor: '#17151E',
+    borderColor: COLORS.accent,
+    borderLeftWidth: 3,
+    marginLeft: 0,
+    marginVertical: 7,
+    paddingHorizontal: 11,
+    paddingVertical: 8,
+  },
+  bullet_list: { marginVertical: 4 },
+  ordered_list: { marginVertical: 4 },
+  bullet_list_icon: { color: COLORS.accent, marginLeft: 4, marginRight: 9 },
+  ordered_list_icon: { color: COLORS.accent, marginLeft: 4, marginRight: 9 },
+  code_inline: {
+    backgroundColor: COLORS.background,
+    borderColor: COLORS.border,
+    color: '#FFE0A3',
+    fontSize: 14,
+    padding: 0,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+  },
+  code_block: {
+    backgroundColor: COLORS.background,
+    borderColor: COLORS.border,
+    color: COLORS.text,
+    fontSize: 14,
+    lineHeight: 20,
+    marginVertical: 7,
+    padding: 10,
+  },
+  fence: {
+    borderColor: COLORS.border,
+    marginVertical: 7,
+  },
+  fence_header: {
+    backgroundColor: COLORS.background,
+    borderBottomColor: COLORS.border,
+  },
+  hr: { backgroundColor: COLORS.border, marginVertical: 10 },
+  table: { borderColor: COLORS.border, marginVertical: 7 },
+  tr: { borderColor: COLORS.border },
+  th: { backgroundColor: COLORS.background },
+  text: { color: COLORS.text },
+};
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: COLORS.background },
@@ -1116,7 +1243,6 @@ const styles = StyleSheet.create({
   userBubble: { backgroundColor: '#3A2631', borderColor: '#704558', borderTopRightRadius: 5, borderWidth: 1 },
   messageLabel: { color: COLORS.accent, fontSize: 9, fontWeight: '900', letterSpacing: 1.3, marginBottom: 6 },
   userMessageLabel: { color: COLORS.rose },
-  messageText: { color: COLORS.text, fontSize: 16, lineHeight: 24 },
   openingState: { alignItems: 'center', flex: 1, justifyContent: 'center', padding: 35 },
   openingMark: { color: COLORS.accent, fontSize: 30, marginBottom: 14 },
   openingTitle: { color: COLORS.text, fontSize: 19, fontWeight: '800' },
