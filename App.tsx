@@ -8,6 +8,7 @@ import {
   Alert,
   FlatList,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -55,6 +56,7 @@ const COLORS = {
 
 const COVER_COLORS = ['#733D5A', '#315C63', '#634A8B', '#8A5538', '#3D6650'];
 type Screen = 'library' | 'create' | 'settings';
+type NovelMenuMode = 'actions' | 'rename' | 'delete';
 
 function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -96,6 +98,9 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>('library');
   const [novels, setNovels] = useState<Novel[]>([]);
   const [activeNovelId, setActiveNovelId] = useState<string | null>(null);
+  const [novelMenuId, setNovelMenuId] = useState<string | null>(null);
+  const [novelMenuMode, setNovelMenuMode] = useState<NovelMenuMode>('actions');
+  const [renameDraft, setRenameDraft] = useState('');
   const [draft, setDraft] = useState('');
   const [novelTitle, setNovelTitle] = useState('');
   const [storySetting, setStorySetting] = useState('');
@@ -124,6 +129,7 @@ export default function App() {
   const storageWriteQueue = useRef<Promise<void>>(Promise.resolve());
 
   const activeNovel = novels.find((novel) => novel.id === activeNovelId) ?? null;
+  const menuNovel = novels.find((novel) => novel.id === novelMenuId) ?? null;
   const visibleMessages =
     activeNovel?.messages.filter((message) => !message.isSetup) ?? [];
   const latestVisibleMessage = visibleMessages[visibleMessages.length - 1];
@@ -234,6 +240,37 @@ export default function App() {
         .map((novel) => (novel.id === novelId ? updater(novel) : novel))
         .sort((first, second) => second.updatedAt.localeCompare(first.updatedAt)),
     );
+  }
+
+  function openNovelMenu(novel: Novel) {
+    setNovelMenuId(novel.id);
+    setRenameDraft(novel.title);
+    setNovelMenuMode('actions');
+  }
+
+  function closeNovelMenu() {
+    setNovelMenuId(null);
+    setRenameDraft('');
+    setNovelMenuMode('actions');
+  }
+
+  function handleRenameNovel() {
+    const title = renameDraft.trim();
+    if (!menuNovel || !title) return;
+
+    updateNovel(menuNovel.id, (novel) => ({ ...novel, title }));
+    closeNovelMenu();
+  }
+
+  function handleDeleteNovel() {
+    if (!menuNovel) return;
+
+    const novelId = menuNovel.id;
+    updateNovels((current) =>
+      current.filter((novel) => novel.id !== novelId),
+    );
+    if (activeNovelId === novelId) setActiveNovelId(null);
+    closeNovelMenu();
   }
 
   function currentTransport() {
@@ -700,6 +737,9 @@ export default function App() {
             renderItem={({ item }) => (
               <Pressable
                 accessibilityLabel={`Open ${item.title}`}
+                accessibilityHint="Long press to rename or delete this novel"
+                delayLongPress={450}
+                onLongPress={() => openNovelMenu(item)}
                 onPress={() => {
                   setActiveNovelId(item.id);
                   setError(null);
@@ -726,6 +766,143 @@ export default function App() {
           </Pressable>
         ) : null}
       </View>
+    );
+  }
+
+  function renderNovelMenu() {
+    if (!menuNovel) return null;
+
+    const canRename = Boolean(renameDraft.trim());
+    return (
+      <Modal
+        animationType="fade"
+        onRequestClose={closeNovelMenu}
+        statusBarTranslucent
+        transparent
+        visible
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.modalRoot}
+        >
+          <Pressable
+            accessibilityLabel="Close novel options"
+            accessibilityRole="button"
+            onPress={closeNovelMenu}
+            style={styles.modalBackdrop}
+          />
+          <View accessibilityViewIsModal style={styles.novelMenu}>
+            {novelMenuMode === 'rename' ? (
+              <>
+                <Text style={styles.modalEyebrow}>RENAME NOVEL</Text>
+                <Text style={styles.modalTitle}>Give this world a new name</Text>
+                <TextInput
+                  accessibilityLabel="Novel title"
+                  autoFocus
+                  maxLength={120}
+                  onChangeText={setRenameDraft}
+                  onSubmitEditing={handleRenameNovel}
+                  placeholder="Novel title"
+                  placeholderTextColor={COLORS.muted}
+                  returnKeyType="done"
+                  selectTextOnFocus
+                  style={styles.renameInput}
+                  value={renameDraft}
+                />
+                <View style={styles.modalButtonRow}>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => setNovelMenuMode('actions')}
+                    style={({ pressed }) => [
+                      styles.modalSecondaryButton,
+                      pressed && styles.buttonPressed,
+                    ]}
+                  >
+                    <Text style={styles.modalSecondaryButtonText}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={!canRename}
+                    onPress={handleRenameNovel}
+                    style={({ pressed }) => [
+                      styles.modalPrimaryButton,
+                      !canRename && styles.buttonDisabled,
+                      pressed && canRename && styles.buttonPressed,
+                    ]}
+                  >
+                    <Text style={styles.darkButtonText}>Save name</Text>
+                  </Pressable>
+                </View>
+              </>
+            ) : novelMenuMode === 'delete' ? (
+              <>
+                <Text style={styles.modalEyebrow}>DELETE NOVEL</Text>
+                <Text style={styles.modalTitle}>Delete this novel?</Text>
+                <Text style={styles.modalBody}>
+                  <Text style={styles.modalBodyEmphasis}>{menuNovel.title}</Text>
+                  {' and its entire story will be permanently deleted. This cannot be undone.'}
+                </Text>
+                <View style={styles.modalButtonRow}>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => setNovelMenuMode('actions')}
+                    style={({ pressed }) => [
+                      styles.modalSecondaryButton,
+                      pressed && styles.buttonPressed,
+                    ]}
+                  >
+                    <Text style={styles.modalSecondaryButtonText}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={handleDeleteNovel}
+                    style={({ pressed }) => [
+                      styles.modalDeleteButton,
+                      pressed && styles.buttonPressed,
+                    ]}
+                  >
+                    <Text style={styles.modalDeleteButtonText}>Delete forever</Text>
+                  </Pressable>
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={styles.modalEyebrow}>NOVEL OPTIONS</Text>
+                <Text numberOfLines={2} style={styles.modalTitle}>{menuNovel.title}</Text>
+                <View style={styles.modalActions}>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => setNovelMenuMode('rename')}
+                    style={({ pressed }) => [styles.modalAction, pressed && styles.buttonPressed]}
+                  >
+                    <Text style={styles.modalActionTitle}>Rename novel</Text>
+                    <Text style={styles.modalActionText}>Change the title shown in your library</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => setNovelMenuMode('delete')}
+                    style={({ pressed }) => [
+                      styles.modalAction,
+                      styles.modalDangerAction,
+                      pressed && styles.buttonPressed,
+                    ]}
+                  >
+                    <Text style={styles.modalDangerTitle}>Delete novel</Text>
+                    <Text style={styles.modalActionText}>Permanently remove this story</Text>
+                  </Pressable>
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={closeNovelMenu}
+                  style={({ pressed }) => [styles.modalCancelButton, pressed && styles.buttonPressed]}
+                >
+                  <Text style={styles.modalSecondaryButtonText}>Cancel</Text>
+                </Pressable>
+              </>
+            )}
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     );
   }
 
@@ -953,6 +1130,7 @@ export default function App() {
             <Text style={styles.loadingText}>Opening your library…</Text>
           </View>
         ) : renderScreen()}
+        {renderNovelMenu()}
       </SafeAreaView>
     </SafeAreaProvider>
   );
@@ -1132,6 +1310,54 @@ const styles = StyleSheet.create({
   },
   coverDate: { color: '#FFFFFFB8', fontSize: 10, marginTop: 9 },
   novelPreview: { color: COLORS.muted, fontSize: 12, lineHeight: 17, marginTop: 9, paddingHorizontal: 2 },
+  modalRoot: { flex: 1, justifyContent: 'flex-end' },
+  modalBackdrop: {
+    backgroundColor: '#000000A8', bottom: 0, left: 0, position: 'absolute',
+    right: 0, top: 0,
+  },
+  novelMenu: {
+    backgroundColor: COLORS.raised, borderColor: COLORS.border, borderTopLeftRadius: 24,
+    borderTopRightRadius: 24, borderWidth: 1, padding: 20,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 24,
+  },
+  modalEyebrow: { color: COLORS.rose, fontSize: 9, fontWeight: '900', letterSpacing: 2 },
+  modalTitle: {
+    color: COLORS.text, fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    fontSize: 22, fontWeight: '700', lineHeight: 28, marginTop: 6,
+  },
+  modalBody: { color: COLORS.muted, fontSize: 14, lineHeight: 21, marginTop: 10 },
+  modalBodyEmphasis: { color: COLORS.text, fontWeight: '800' },
+  modalActions: { gap: 10, marginTop: 18 },
+  modalAction: {
+    backgroundColor: COLORS.panel, borderColor: COLORS.border, borderRadius: 14,
+    borderWidth: 1, paddingHorizontal: 15, paddingVertical: 14,
+  },
+  modalDangerAction: { backgroundColor: COLORS.dangerBackground, borderColor: '#744049' },
+  modalActionTitle: { color: COLORS.text, fontSize: 15, fontWeight: '800' },
+  modalDangerTitle: { color: COLORS.danger, fontSize: 15, fontWeight: '800' },
+  modalActionText: { color: COLORS.muted, fontSize: 12, marginTop: 3 },
+  modalCancelButton: { alignItems: 'center', marginTop: 8, paddingVertical: 12 },
+  renameInput: {
+    backgroundColor: COLORS.background, borderColor: COLORS.accent, borderRadius: 14,
+    borderWidth: 1, color: COLORS.text, fontSize: 16, marginTop: 18,
+    paddingHorizontal: 14, paddingVertical: 13,
+  },
+  modalButtonRow: { flexDirection: 'row', gap: 10, justifyContent: 'flex-end', marginTop: 14 },
+  modalSecondaryButton: {
+    alignItems: 'center', borderColor: COLORS.border, borderRadius: 13,
+    borderWidth: 1, justifyContent: 'center', paddingHorizontal: 16, paddingVertical: 12,
+  },
+  modalSecondaryButtonText: { color: COLORS.text, fontSize: 14, fontWeight: '800' },
+  modalPrimaryButton: {
+    alignItems: 'center', backgroundColor: COLORS.accent, borderRadius: 13,
+    justifyContent: 'center', paddingHorizontal: 17, paddingVertical: 12,
+  },
+  modalDeleteButton: {
+    alignItems: 'center', backgroundColor: COLORS.dangerBackground,
+    borderColor: COLORS.danger, borderRadius: 13, borderWidth: 1,
+    justifyContent: 'center', paddingHorizontal: 17, paddingVertical: 12,
+  },
+  modalDeleteButtonText: { color: COLORS.danger, fontSize: 14, fontWeight: '900' },
   floatingButton: {
     alignSelf: 'center', backgroundColor: COLORS.accent, borderRadius: 24, bottom: 20,
     elevation: 7, paddingHorizontal: 20, paddingVertical: 13, position: 'absolute',
