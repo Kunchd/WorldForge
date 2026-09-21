@@ -1036,21 +1036,26 @@ export default function App() {
           keyExtractor={(message) => message.id}
           keyboardShouldPersistTaps="handled"
           onScrollToIndexFailed={handleScrollToIndexFailed}
-          renderItem={({ item }) => (
-            <View style={[styles.messageRow, item.role === 'user' && styles.userMessageRow]}>
-              <View style={[
-                styles.messageBubble,
-                item.role === 'user' ? styles.userBubble : styles.narratorBubble,
-              ]}>
-                <Text style={[styles.messageLabel, item.role === 'user' && styles.userMessageLabel]}>
-                  {item.role === 'user' ? 'YOUR CHOICE' : 'NARRATOR'}
-                </Text>
+          renderItem={({ item }) =>
+            item.role === 'user' ? (
+              <View style={[styles.messageRow, styles.userMessageRow]}>
+                <View style={[styles.messageBubble, styles.userBubble]}>
+                  <Text style={[styles.messageLabel, styles.userMessageLabel]}>
+                    YOUR CHOICE
+                  </Text>
+                  <Markdown colorScheme="dark" style={userMarkdownStyles}>
+                    {item.content}
+                  </Markdown>
+                </View>
+              </View>
+            ) : (
+              <View style={[styles.messageRow, styles.narratorPassage]}>
                 <Markdown colorScheme="dark" style={markdownStyles}>
                   {item.content}
                 </Markdown>
               </View>
-            </View>
-          )}
+            )
+          }
           ListEmptyComponent={isSending ? (
             <View style={styles.openingState}>
               <Text style={styles.openingMark}>✦</Text>
@@ -1160,11 +1165,12 @@ function FieldLabel({ title, help }: { title: string; help: string }) {
 const markdownStyles: MarkdownStyleMap = {
   body: {
     color: COLORS.text,
-    fontSize: 16,
-    lineHeight: 24,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    fontSize: 17,
+    lineHeight: 28,
   },
   paragraph: {
-    marginBottom: 8,
+    marginBottom: 12,
     marginTop: 0,
   },
   heading1: {
@@ -1237,6 +1243,23 @@ const markdownStyles: MarkdownStyleMap = {
   tr: { borderColor: COLORS.border },
   th: { backgroundColor: COLORS.background },
   text: { color: COLORS.text },
+};
+
+const userMarkdownStyles: MarkdownStyleMap = {
+  ...markdownStyles,
+  body: {
+    ...markdownStyles.body,
+    fontFamily: undefined,
+    fontSize: 16,
+    lineHeight: 23,
+    textAlign: 'center',
+  },
+  paragraph: {
+    ...markdownStyles.paragraph,
+    marginBottom: 0,
+    textAlign: 'center',
+  },
+  text: { color: COLORS.text, textAlign: 'center' },
 };
 
 const styles = StyleSheet.create({
@@ -1461,13 +1484,13 @@ const styles = StyleSheet.create({
     borderWidth: 1, paddingVertical: 9,
   },
   chapterBarText: { color: COLORS.muted, fontSize: 9, fontWeight: '900', letterSpacing: 2 },
-  messageList: { flexGrow: 1, padding: 16, paddingBottom: 24 },
-  messageRow: { alignItems: 'flex-start', marginBottom: 15 },
-  userMessageRow: { alignItems: 'flex-end' },
-  messageBubble: { borderRadius: 18, maxWidth: '91%', paddingHorizontal: 15, paddingVertical: 13 },
-  narratorBubble: { backgroundColor: COLORS.raised, borderColor: COLORS.border, borderTopLeftRadius: 5, borderWidth: 1 },
-  userBubble: { backgroundColor: '#3A2631', borderColor: '#704558', borderTopRightRadius: 5, borderWidth: 1 },
-  messageLabel: { color: COLORS.accent, fontSize: 9, fontWeight: '900', letterSpacing: 1.3, marginBottom: 6 },
+  messageList: { flexGrow: 1, paddingBottom: 30, paddingHorizontal: 22, paddingTop: 24 },
+  messageRow: { marginBottom: 24 },
+  narratorPassage: { alignSelf: 'center', maxWidth: 680, width: '100%' },
+  userMessageRow: { alignItems: 'center', marginBottom: 28, marginTop: 2 },
+  messageBubble: { borderRadius: 18, maxWidth: 520, paddingHorizontal: 18, paddingVertical: 14, width: '91%' },
+  userBubble: { backgroundColor: '#3A2631', borderColor: '#704558', borderWidth: 1 },
+  messageLabel: { fontSize: 9, fontWeight: '900', letterSpacing: 1.3, marginBottom: 7, textAlign: 'center' },
   userMessageLabel: { color: COLORS.rose },
   openingState: { alignItems: 'center', flex: 1, justifyContent: 'center', padding: 35 },
   openingMark: { color: COLORS.accent, fontSize: 30, marginBottom: 14 },

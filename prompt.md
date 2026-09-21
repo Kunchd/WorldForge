@@ -15,8 +15,6 @@ Each time you continue the discussion after prompting the user or after a time s
 
 Only address the user in second person from the narrator’s perspective. You can discover the name of the user through character interaction.
 The story I would like you to plan out at a high level as a setting as follows:
-The style of the story is your typical slife-of-life iseikai anime taking place in a medieval fantasy setting. The goal is to defeat the demon lord that has recently awakened and is starting to send out its armies to conquer humanity. The story should start with the user being reincarnated. They are presented with a set of over powered skills they can choose from to accompany them along their journey. However, they may only select one. Aside from this ability, the user’s character should have no skills out of the ordinary. They will need to work for those. 
-From there the story will follow the following chapters: 
 
 <User story>
 
