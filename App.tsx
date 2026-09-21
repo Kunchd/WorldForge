@@ -113,7 +113,6 @@ export default function App() {
   const [apiMode, setApiMode] = useState<ChatApiMode>('proxy');
   const [modelId, setModelId] = useState<ModelId>(DEFAULT_MODEL_ID);
   const [pendingModelId, setPendingModelId] = useState<ModelId | null>(null);
-  const [pendingApiMode, setPendingApiMode] = useState<ChatApiMode | null>(null);
   const [openAIApiKey, setOpenAIApiKey] = useState<string | null>(null);
   const [apiKeyDraft, setApiKeyDraft] = useState('');
   const [isEditingApiKey, setIsEditingApiKey] = useState(false);
@@ -126,6 +125,7 @@ export default function App() {
   const lastAutoScrolledUserIdRef = useRef<string | null>(null);
   const scrollRetryCountRef = useRef(0);
   const apiKeyInputRef = useRef<TextInput>(null);
+  const isSwitchingApiModeRef = useRef(false);
   const storageWriteQueue = useRef<Promise<void>>(Promise.resolve());
 
   const activeNovel = novels.find((novel) => novel.id === activeNovelId) ?? null;
@@ -363,55 +363,58 @@ export default function App() {
   }
 
   async function handleUseProxy() {
-    if (isSavingApiSettings) return;
-    setPendingApiMode('proxy');
-    setIsSavingApiSettings(true);
-    setApiSettingsError(null);
-    setApiSettingsNotice(null);
+    if (isSavingApiSettings || isSwitchingApiModeRef.current) return;
+    if (apiMode === 'proxy') {
+      setIsEditingApiKey(false);
+      return;
+    }
+    isSwitchingApiModeRef.current = true;
     try {
       await saveChatApiMode('proxy');
       setApiMode('proxy');
       setIsEditingApiKey(false);
+      setApiSettingsError(null);
       setApiSettingsNotice('New story turns will use the configured proxy.');
     } catch (caughtError) {
+      setApiSettingsNotice(null);
       setApiSettingsError(
         caughtError instanceof Error ? caughtError.message : 'Could not save the API mode.',
       );
     } finally {
-      setPendingApiMode(null);
-      setIsSavingApiSettings(false);
+      isSwitchingApiModeRef.current = false;
     }
   }
 
   async function handleUseDirectOpenAI() {
-    if (isSavingApiSettings) return;
-    setApiSettingsError(null);
-    setApiSettingsNotice(null);
+    if (isSavingApiSettings || isSwitchingApiModeRef.current) return;
     if (!supportsDirectOpenAI()) {
+      setApiSettingsNotice(null);
       setApiSettingsError(
         'Direct OpenAI access is available in the Android and iOS apps only.',
       );
       return;
     }
     if (!openAIApiKey) {
-      setPendingApiMode('direct');
+      setApiSettingsError(null);
+      setApiSettingsNotice(null);
       setIsEditingApiKey(true);
       setTimeout(() => apiKeyInputRef.current?.focus(), 0);
       return;
     }
-    setPendingApiMode('direct');
-    setIsSavingApiSettings(true);
+    if (apiMode === 'direct') return;
+    isSwitchingApiModeRef.current = true;
     try {
       await saveChatApiMode('direct');
       setApiMode('direct');
+      setApiSettingsError(null);
       setApiSettingsNotice('New story turns will be sent directly to OpenAI.');
     } catch (caughtError) {
+      setApiSettingsNotice(null);
       setApiSettingsError(
         caughtError instanceof Error ? caughtError.message : 'Could not save the API mode.',
       );
     } finally {
-      setPendingApiMode(null);
-      setIsSavingApiSettings(false);
+      isSwitchingApiModeRef.current = false;
     }
   }
 
@@ -423,7 +426,6 @@ export default function App() {
       return;
     }
     setIsSavingApiSettings(true);
-    setPendingApiMode('direct');
     setApiSettingsError(null);
     setApiSettingsNotice(null);
     try {
@@ -441,14 +443,12 @@ export default function App() {
         caughtError instanceof Error ? caughtError.message : 'Could not save the API key.',
       );
     } finally {
-      setPendingApiMode(null);
       setIsSavingApiSettings(false);
     }
   }
 
   async function removeOpenAIKey() {
     setIsSavingApiSettings(true);
-    setPendingApiMode('proxy');
     setApiSettingsError(null);
     setApiSettingsNotice(null);
     try {
@@ -464,7 +464,6 @@ export default function App() {
         caughtError instanceof Error ? caughtError.message : 'Could not remove the API key.',
       );
     } finally {
-      setPendingApiMode(null);
       setIsSavingApiSettings(false);
     }
   }
@@ -551,7 +550,6 @@ export default function App() {
 
   function renderApiSettings() {
     const directSupported = supportsDirectOpenAI();
-    const selectedApiMode = pendingApiMode ?? apiMode;
     const hasApiKeyDraft = Boolean(normalizeOpenAIApiKey(apiKeyDraft));
     return (
       <View style={styles.connectionCard}>
@@ -567,32 +565,32 @@ export default function App() {
         <View style={styles.connectionOptions}>
           <Pressable
             accessibilityRole="button"
-            accessibilityState={{ selected: selectedApiMode === 'proxy' }}
+            accessibilityState={{ selected: apiMode === 'proxy' }}
             disabled={isSavingApiSettings}
             onPress={() => void handleUseProxy()}
             style={({ pressed }) => [
               styles.connectionOption,
-              selectedApiMode === 'proxy' && styles.connectionOptionSelected,
+              apiMode === 'proxy' && styles.connectionOptionSelected,
               pressed && styles.buttonPressed,
             ]}
           >
-            <Text style={[styles.optionTitle, selectedApiMode === 'proxy' && styles.optionSelectedText]}>
+            <Text style={[styles.optionTitle, apiMode === 'proxy' && styles.optionSelectedText]}>
               Server proxy
             </Text>
             <Text style={styles.optionText}>Uses the app service</Text>
           </Pressable>
           <Pressable
             accessibilityRole="button"
-            accessibilityState={{ selected: selectedApiMode === 'direct' }}
+            accessibilityState={{ selected: apiMode === 'direct' }}
             disabled={isSavingApiSettings}
             onPress={() => void handleUseDirectOpenAI()}
             style={({ pressed }) => [
               styles.connectionOption,
-              selectedApiMode === 'direct' && styles.connectionOptionSelected,
+              apiMode === 'direct' && styles.connectionOptionSelected,
               pressed && styles.buttonPressed,
             ]}
           >
-            <Text style={[styles.optionTitle, selectedApiMode === 'direct' && styles.optionSelectedText]}>
+            <Text style={[styles.optionTitle, apiMode === 'direct' && styles.optionSelectedText]}>
               My API key
             </Text>
             <Text style={styles.optionText}>Connects to OpenAI</Text>
@@ -983,9 +981,15 @@ export default function App() {
 
   function renderSettings() {
     return (
-      <View style={styles.screen}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={styles.flex}
+      >
         <Header title="Settings" onBack={() => setScreen('library')} />
-        <ScrollView contentContainerStyle={styles.settingsContent}>
+        <ScrollView
+          contentContainerStyle={styles.settingsContent}
+          keyboardShouldPersistTaps="handled"
+        >
           <Text style={styles.formEyebrow}>NARRATOR</Text>
           <Text style={styles.settingsTitle}>Narrator settings</Text>
           <Text style={styles.formIntro}>
@@ -1002,7 +1006,7 @@ export default function App() {
             </Text>
           </View>
         </ScrollView>
-      </View>
+      </KeyboardAvoidingView>
     );
   }
 
