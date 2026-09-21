@@ -24,6 +24,8 @@ function isNovel(value: unknown): value is Novel {
   return (
     typeof novel.id === 'string' &&
     typeof novel.title === 'string' &&
+    (novel.subtext === undefined || typeof novel.subtext === 'string') &&
+    (novel.coverImageUri === undefined || typeof novel.coverImageUri === 'string') &&
     typeof novel.setting === 'string' &&
     typeof novel.plot === 'string' &&
     typeof novel.createdAt === 'string' &&

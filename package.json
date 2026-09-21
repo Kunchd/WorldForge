@@ -6,6 +6,8 @@
     "@react-native-async-storage/async-storage": "2.2.0",
     "@ronradtke/react-native-markdown-display": "^9.0.3",
     "expo": "~57.0.24",
+    "expo-file-system": "~57.0.7",
+    "expo-image-picker": "~57.0.19",
     "expo-secure-store": "~57.0.4",
     "expo-status-bar": "~57.0.1",
     "openai": "^7.20.0",

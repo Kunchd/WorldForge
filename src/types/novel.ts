@@ -10,6 +10,8 @@ export type NovelMessage = {
 export type Novel = {
   id: string;
   title: string;
+  subtext?: string;
+  coverImageUri?: string;
   setting: string;
   plot: string;
   messages: NovelMessage[];

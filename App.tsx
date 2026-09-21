@@ -1,4 +1,5 @@
 import { StatusBar } from 'expo-status-bar';
+import * as ImagePicker from 'expo-image-picker';
 import { useEffect, useRef, useState } from 'react';
 import Markdown, {
   type MarkdownStyleMap,
@@ -7,8 +8,8 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Image,
   KeyboardAvoidingView,
-  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -37,6 +38,7 @@ import {
   modelLabel,
 } from './src/lib/modelConfig.mjs';
 import { loadNovels, saveNovels } from './src/lib/novelStorage';
+import { deleteNovelCover, persistNovelCover } from './src/lib/novelCoverStorage';
 import { buildStoryPrompt } from './src/lib/storyPrompt';
 import { Novel, NovelMessage } from './src/types/novel';
 
@@ -55,8 +57,7 @@ const COLORS = {
 };
 
 const COVER_COLORS = ['#733D5A', '#315C63', '#634A8B', '#8A5538', '#3D6650'];
-type Screen = 'library' | 'create' | 'settings';
-type NovelMenuMode = 'actions' | 'rename' | 'delete';
+type Screen = 'library' | 'create' | 'novelConfig' | 'settings';
 
 function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -79,6 +80,8 @@ function formatUpdatedAt(timestamp: string) {
 }
 
 function previewForNovel(novel: Novel) {
+  const customSubtext = novel.subtext?.trim();
+  if (customSubtext) return customSubtext;
   const messages = novel.messages.filter((message) => !message.isSetup);
   const message = messages[messages.length - 1];
   return message
@@ -98,11 +101,16 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>('library');
   const [novels, setNovels] = useState<Novel[]>([]);
   const [activeNovelId, setActiveNovelId] = useState<string | null>(null);
-  const [novelMenuId, setNovelMenuId] = useState<string | null>(null);
-  const [novelMenuMode, setNovelMenuMode] = useState<NovelMenuMode>('actions');
-  const [renameDraft, setRenameDraft] = useState('');
+  const [configNovelId, setConfigNovelId] = useState<string | null>(null);
+  const [configTitle, setConfigTitle] = useState('');
+  const [configSubtext, setConfigSubtext] = useState('');
+  const [configCoverAsset, setConfigCoverAsset] = useState<ImagePicker.ImagePickerAsset | null>(null);
+  const [removeConfigCover, setRemoveConfigCover] = useState(false);
+  const [isSavingNovelConfig, setIsSavingNovelConfig] = useState(false);
+  const [configError, setConfigError] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [novelTitle, setNovelTitle] = useState('');
+  const [novelSubtext, setNovelSubtext] = useState('');
   const [storySetting, setStorySetting] = useState('');
   const [storyPlot, setStoryPlot] = useState('');
   const [isSending, setIsSending] = useState(false);
@@ -129,7 +137,7 @@ export default function App() {
   const storageWriteQueue = useRef<Promise<void>>(Promise.resolve());
 
   const activeNovel = novels.find((novel) => novel.id === activeNovelId) ?? null;
-  const menuNovel = novels.find((novel) => novel.id === novelMenuId) ?? null;
+  const configNovel = novels.find((novel) => novel.id === configNovelId) ?? null;
   const visibleMessages =
     activeNovel?.messages.filter((message) => !message.isSetup) ?? [];
   const latestVisibleMessage = visibleMessages[visibleMessages.length - 1];
@@ -242,35 +250,96 @@ export default function App() {
     );
   }
 
-  function openNovelMenu(novel: Novel) {
-    setNovelMenuId(novel.id);
-    setRenameDraft(novel.title);
-    setNovelMenuMode('actions');
+  function openNovelConfig(novel: Novel) {
+    setConfigNovelId(novel.id);
+    setConfigTitle(novel.title);
+    setConfigSubtext(novel.subtext ?? '');
+    setConfigCoverAsset(null);
+    setRemoveConfigCover(false);
+    setConfigError(null);
+    setScreen('novelConfig');
   }
 
-  function closeNovelMenu() {
-    setNovelMenuId(null);
-    setRenameDraft('');
-    setNovelMenuMode('actions');
+  function closeNovelConfig() {
+    setConfigNovelId(null);
+    setConfigCoverAsset(null);
+    setRemoveConfigCover(false);
+    setConfigError(null);
+    setScreen('library');
   }
 
-  function handleRenameNovel() {
-    const title = renameDraft.trim();
-    if (!menuNovel || !title) return;
+  async function handleChooseNovelCover() {
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        quality: 0.85,
+        base64: Platform.OS === 'web',
+      });
+      if (result.canceled) return;
+      setConfigCoverAsset(result.assets[0]);
+      setRemoveConfigCover(false);
+      setConfigError(null);
+    } catch (caughtError) {
+      setConfigError(
+        caughtError instanceof Error ? caughtError.message : 'Could not open your image library.',
+      );
+    }
+  }
 
-    updateNovel(menuNovel.id, (novel) => ({ ...novel, title }));
-    closeNovelMenu();
+  async function handleSaveNovelConfig() {
+    const title = configTitle.trim();
+    if (!configNovel || !title || isSavingNovelConfig) return;
+
+    setIsSavingNovelConfig(true);
+    setConfigError(null);
+    try {
+      const oldCoverUri = configNovel.coverImageUri;
+      let coverImageUri = removeConfigCover ? undefined : oldCoverUri;
+      if (configCoverAsset) {
+        coverImageUri = await persistNovelCover(configNovel.id, configCoverAsset);
+      }
+
+      updateNovel(configNovel.id, (novel) => ({
+        ...novel,
+        title,
+        subtext: configSubtext.trim() || undefined,
+        coverImageUri,
+        updatedAt: new Date().toISOString(),
+      }));
+
+      if (oldCoverUri && oldCoverUri !== coverImageUri) {
+        void deleteNovelCover(oldCoverUri).catch(() => undefined);
+      }
+      closeNovelConfig();
+    } catch (caughtError) {
+      setConfigError(
+        caughtError instanceof Error ? caughtError.message : 'Could not save these novel settings.',
+      );
+    } finally {
+      setIsSavingNovelConfig(false);
+    }
   }
 
   function handleDeleteNovel() {
-    if (!menuNovel) return;
-
-    const novelId = menuNovel.id;
-    updateNovels((current) =>
-      current.filter((novel) => novel.id !== novelId),
+    if (!configNovel) return;
+    Alert.alert(
+      'Delete this novel?',
+      `${configNovel.title} and its entire story will be permanently deleted. This cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete forever',
+          style: 'destructive',
+          onPress: () => {
+            const { id, coverImageUri } = configNovel;
+            updateNovels((current) => current.filter((novel) => novel.id !== id));
+            if (activeNovelId === id) setActiveNovelId(null);
+            void deleteNovelCover(coverImageUri).catch(() => undefined);
+            closeNovelConfig();
+          },
+        },
+      ],
     );
-    if (activeNovelId === novelId) setActiveNovelId(null);
-    closeNovelMenu();
   }
 
   function currentTransport() {
@@ -320,6 +389,7 @@ export default function App() {
     const novel: Novel = {
       id: createId('novel'),
       title: novelTitle.trim() || deriveTitle(setting),
+      subtext: novelSubtext.trim() || undefined,
       setting,
       plot,
       messages: [setupMessage],
@@ -330,6 +400,7 @@ export default function App() {
     setActiveNovelId(novel.id);
     setScreen('library');
     setNovelTitle('');
+    setNovelSubtext('');
     setStorySetting('');
     setStoryPlot('');
     void requestStoryReply(novel.id, novel.messages);
@@ -735,9 +806,9 @@ export default function App() {
             renderItem={({ item }) => (
               <Pressable
                 accessibilityLabel={`Open ${item.title}`}
-                accessibilityHint="Long press to rename or delete this novel"
+                accessibilityHint="Long press to edit this novel's cover, title, or subtext"
                 delayLongPress={450}
-                onLongPress={() => openNovelMenu(item)}
+                onLongPress={() => openNovelConfig(item)}
                 onPress={() => {
                   setActiveNovelId(item.id);
                   setError(null);
@@ -745,8 +816,17 @@ export default function App() {
                 style={({ pressed }) => [styles.novelCard, pressed && styles.cardPressed]}
               >
                 <View style={[styles.novelCover, { backgroundColor: coverColorFor(item) }]}>
-                  <View style={styles.coverGlow} />
-                  <Text style={styles.coverMark}>✦</Text>
+                  {item.coverImageUri ? (
+                    <Image
+                      accessibilityIgnoresInvertColors
+                      resizeMode="cover"
+                      source={{ uri: item.coverImageUri }}
+                      style={styles.coverImage}
+                    />
+                  ) : null}
+                  {item.coverImageUri ? <View style={styles.coverScrim} /> : null}
+                  {!item.coverImageUri ? <View style={styles.coverGlow} /> : null}
+                  {!item.coverImageUri ? <Text style={styles.coverMark}>✦</Text> : null}
                   <Text numberOfLines={3} style={styles.coverTitle}>{item.title}</Text>
                   <Text style={styles.coverDate}>{formatUpdatedAt(item.updatedAt)}</Text>
                 </View>
@@ -767,140 +847,120 @@ export default function App() {
     );
   }
 
-  function renderNovelMenu() {
-    if (!menuNovel) return null;
+  function renderNovelConfig() {
+    if (!configNovel) return renderLibrary();
 
-    const canRename = Boolean(renameDraft.trim());
+    const previewUri = configCoverAsset?.uri ?? (
+      removeConfigCover ? undefined : configNovel.coverImageUri
+    );
+    const canSave = Boolean(configTitle.trim()) && !isSavingNovelConfig;
     return (
-      <Modal
-        animationType="fade"
-        onRequestClose={closeNovelMenu}
-        statusBarTranslucent
-        transparent
-        visible
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={styles.flex}
       >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          style={styles.modalRoot}
+        <Header title="Novel settings" onBack={closeNovelConfig} />
+        <ScrollView
+          contentContainerStyle={styles.formContent}
+          keyboardShouldPersistTaps="handled"
         >
-          <Pressable
-            accessibilityLabel="Close novel options"
-            accessibilityRole="button"
-            onPress={closeNovelMenu}
-            style={styles.modalBackdrop}
-          />
-          <View accessibilityViewIsModal style={styles.novelMenu}>
-            {novelMenuMode === 'rename' ? (
-              <>
-                <Text style={styles.modalEyebrow}>RENAME NOVEL</Text>
-                <Text style={styles.modalTitle}>Give this world a new name</Text>
-                <TextInput
-                  accessibilityLabel="Novel title"
-                  autoFocus
-                  maxLength={120}
-                  onChangeText={setRenameDraft}
-                  onSubmitEditing={handleRenameNovel}
-                  placeholder="Novel title"
-                  placeholderTextColor={COLORS.muted}
-                  returnKeyType="done"
-                  selectTextOnFocus
-                  style={styles.renameInput}
-                  value={renameDraft}
-                />
-                <View style={styles.modalButtonRow}>
-                  <Pressable
-                    accessibilityRole="button"
-                    onPress={() => setNovelMenuMode('actions')}
-                    style={({ pressed }) => [
-                      styles.modalSecondaryButton,
-                      pressed && styles.buttonPressed,
-                    ]}
-                  >
-                    <Text style={styles.modalSecondaryButtonText}>Cancel</Text>
-                  </Pressable>
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={!canRename}
-                    onPress={handleRenameNovel}
-                    style={({ pressed }) => [
-                      styles.modalPrimaryButton,
-                      !canRename && styles.buttonDisabled,
-                      pressed && canRename && styles.buttonPressed,
-                    ]}
-                  >
-                    <Text style={styles.darkButtonText}>Save name</Text>
-                  </Pressable>
-                </View>
-              </>
-            ) : novelMenuMode === 'delete' ? (
-              <>
-                <Text style={styles.modalEyebrow}>DELETE NOVEL</Text>
-                <Text style={styles.modalTitle}>Delete this novel?</Text>
-                <Text style={styles.modalBody}>
-                  <Text style={styles.modalBodyEmphasis}>{menuNovel.title}</Text>
-                  {' and its entire story will be permanently deleted. This cannot be undone.'}
-                </Text>
-                <View style={styles.modalButtonRow}>
-                  <Pressable
-                    accessibilityRole="button"
-                    onPress={() => setNovelMenuMode('actions')}
-                    style={({ pressed }) => [
-                      styles.modalSecondaryButton,
-                      pressed && styles.buttonPressed,
-                    ]}
-                  >
-                    <Text style={styles.modalSecondaryButtonText}>Cancel</Text>
-                  </Pressable>
-                  <Pressable
-                    accessibilityRole="button"
-                    onPress={handleDeleteNovel}
-                    style={({ pressed }) => [
-                      styles.modalDeleteButton,
-                      pressed && styles.buttonPressed,
-                    ]}
-                  >
-                    <Text style={styles.modalDeleteButtonText}>Delete forever</Text>
-                  </Pressable>
-                </View>
-              </>
+          <Text style={styles.formEyebrow}>CUSTOMIZE NOVEL</Text>
+          <Text style={styles.formTitle}>Shape its place on the shelf</Text>
+          <Text style={styles.formIntro}>
+            Choose cover art and the short description shown in your library.
+          </Text>
+
+          <FieldLabel title="Cover image" help="Choose an image from your photo library." />
+          <View style={[styles.configCover, { backgroundColor: coverColorFor(configNovel) }]}>
+            {previewUri ? (
+              <Image
+                accessibilityIgnoresInvertColors
+                resizeMode="cover"
+                source={{ uri: previewUri }}
+                style={styles.configCoverImage}
+              />
             ) : (
               <>
-                <Text style={styles.modalEyebrow}>NOVEL OPTIONS</Text>
-                <Text numberOfLines={2} style={styles.modalTitle}>{menuNovel.title}</Text>
-                <View style={styles.modalActions}>
-                  <Pressable
-                    accessibilityRole="button"
-                    onPress={() => setNovelMenuMode('rename')}
-                    style={({ pressed }) => [styles.modalAction, pressed && styles.buttonPressed]}
-                  >
-                    <Text style={styles.modalActionTitle}>Rename novel</Text>
-                    <Text style={styles.modalActionText}>Change the title shown in your library</Text>
-                  </Pressable>
-                  <Pressable
-                    accessibilityRole="button"
-                    onPress={() => setNovelMenuMode('delete')}
-                    style={({ pressed }) => [
-                      styles.modalAction,
-                      styles.modalDangerAction,
-                      pressed && styles.buttonPressed,
-                    ]}
-                  >
-                    <Text style={styles.modalDangerTitle}>Delete novel</Text>
-                    <Text style={styles.modalActionText}>Permanently remove this story</Text>
-                  </Pressable>
-                </View>
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={closeNovelMenu}
-                  style={({ pressed }) => [styles.modalCancelButton, pressed && styles.buttonPressed]}
-                >
-                  <Text style={styles.modalSecondaryButtonText}>Cancel</Text>
-                </Pressable>
+                <Text style={styles.configCoverMark}>✦</Text>
+                <Text numberOfLines={3} style={styles.configCoverTitle}>{configTitle}</Text>
               </>
             )}
           </View>
-        </KeyboardAvoidingView>
-      </Modal>
+          <View style={styles.coverButtonRow}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => void handleChooseNovelCover()}
+              style={({ pressed }) => [styles.coverButton, pressed && styles.buttonPressed]}
+            >
+              <Text style={styles.coverButtonText}>{previewUri ? 'Replace image' : 'Choose image'}</Text>
+            </Pressable>
+            {previewUri ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  setConfigCoverAsset(null);
+                  setRemoveConfigCover(true);
+                }}
+                style={({ pressed }) => [styles.coverButton, pressed && styles.buttonPressed]}
+              >
+                <Text style={styles.removeCoverText}>Remove</Text>
+              </Pressable>
+            ) : null}
+          </View>
+
+          <FieldLabel title="Title" help="The name shown on the novel cover." />
+          <TextInput
+            accessibilityLabel="Novel title"
+            maxLength={120}
+            onChangeText={setConfigTitle}
+            placeholder="Novel title"
+            placeholderTextColor={COLORS.muted}
+            style={styles.formInput}
+            value={configTitle}
+          />
+          <FieldLabel
+            title="Subtext"
+            help="Optional — leave blank to keep previewing the latest story passage."
+          />
+          <TextInput
+            accessibilityLabel="Novel subtext"
+            maxLength={240}
+            multiline
+            onChangeText={setConfigSubtext}
+            placeholder="A short description for your library…"
+            placeholderTextColor={COLORS.muted}
+            style={[styles.formInput, styles.subtextArea]}
+            textAlignVertical="top"
+            value={configSubtext}
+          />
+          {configError ? (
+            <View style={styles.errorBanner}><Text style={styles.errorText}>{configError}</Text></View>
+          ) : null}
+          <Pressable
+            accessibilityRole="button"
+            disabled={!canSave}
+            onPress={() => void handleSaveNovelConfig()}
+            style={({ pressed }) => [
+              styles.forgeButton,
+              !canSave && styles.buttonDisabled,
+              pressed && canSave && styles.buttonPressed,
+            ]}
+          >
+            {isSavingNovelConfig ? (
+              <ActivityIndicator color="#241804" />
+            ) : (
+              <Text style={styles.darkButtonText}>Save changes</Text>
+            )}
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            onPress={handleDeleteNovel}
+            style={({ pressed }) => [styles.deleteNovelButton, pressed && styles.buttonPressed]}
+          >
+            <Text style={styles.deleteNovelButtonText}>Delete novel</Text>
+          </Pressable>
+        </ScrollView>
+      </KeyboardAvoidingView>
     );
   }
 
@@ -925,6 +985,21 @@ export default function App() {
             placeholderTextColor={COLORS.muted}
             style={styles.formInput}
             value={novelTitle}
+          />
+          <FieldLabel
+            title="Subtext"
+            help="Optional — add a short description for this novel in your library."
+          />
+          <TextInput
+            accessibilityLabel="Novel subtext"
+            maxLength={240}
+            multiline
+            onChangeText={setNovelSubtext}
+            placeholder="A reluctant star-reader uncovers a secret that could change the sky…"
+            placeholderTextColor={COLORS.muted}
+            style={[styles.formInput, styles.subtextArea]}
+            textAlignVertical="top"
+            value={novelSubtext}
           />
           <FieldLabel
             title="Story setting"
@@ -1124,6 +1199,7 @@ export default function App() {
   function renderScreen() {
     if (activeNovel) return renderNovel();
     if (screen === 'create') return renderCreateNovel();
+    if (screen === 'novelConfig') return renderNovelConfig();
     if (screen === 'settings') return renderSettings();
     return renderLibrary();
   }
@@ -1139,7 +1215,6 @@ export default function App() {
             <Text style={styles.loadingText}>Opening your library…</Text>
           </View>
         ) : renderScreen()}
-        {renderNovelMenu()}
       </SafeAreaView>
     </SafeAreaProvider>
   );
@@ -1326,6 +1401,13 @@ const styles = StyleSheet.create({
     borderColor: '#FFFFFF20', borderRadius: 16, borderWidth: 1, height: 190,
     justifyContent: 'flex-end', overflow: 'hidden', padding: 14,
   },
+  coverImage: {
+    bottom: 0, left: 0, position: 'absolute', right: 0, top: 0,
+  },
+  coverScrim: {
+    backgroundColor: '#00000055', bottom: 0, left: 0, position: 'absolute',
+    right: 0, top: 0,
+  },
   coverGlow: {
     backgroundColor: '#FFFFFF12', borderRadius: 80, height: 150,
     position: 'absolute', right: -45, top: -35, width: 150,
@@ -1337,54 +1419,6 @@ const styles = StyleSheet.create({
   },
   coverDate: { color: '#FFFFFFB8', fontSize: 10, marginTop: 9 },
   novelPreview: { color: COLORS.muted, fontSize: 12, lineHeight: 17, marginTop: 9, paddingHorizontal: 2 },
-  modalRoot: { flex: 1, justifyContent: 'flex-end' },
-  modalBackdrop: {
-    backgroundColor: '#000000A8', bottom: 0, left: 0, position: 'absolute',
-    right: 0, top: 0,
-  },
-  novelMenu: {
-    backgroundColor: COLORS.raised, borderColor: COLORS.border, borderTopLeftRadius: 24,
-    borderTopRightRadius: 24, borderWidth: 1, padding: 20,
-    paddingBottom: Platform.OS === 'ios' ? 34 : 24,
-  },
-  modalEyebrow: { color: COLORS.rose, fontSize: 9, fontWeight: '900', letterSpacing: 2 },
-  modalTitle: {
-    color: COLORS.text, fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
-    fontSize: 22, fontWeight: '700', lineHeight: 28, marginTop: 6,
-  },
-  modalBody: { color: COLORS.muted, fontSize: 14, lineHeight: 21, marginTop: 10 },
-  modalBodyEmphasis: { color: COLORS.text, fontWeight: '800' },
-  modalActions: { gap: 10, marginTop: 18 },
-  modalAction: {
-    backgroundColor: COLORS.panel, borderColor: COLORS.border, borderRadius: 14,
-    borderWidth: 1, paddingHorizontal: 15, paddingVertical: 14,
-  },
-  modalDangerAction: { backgroundColor: COLORS.dangerBackground, borderColor: '#744049' },
-  modalActionTitle: { color: COLORS.text, fontSize: 15, fontWeight: '800' },
-  modalDangerTitle: { color: COLORS.danger, fontSize: 15, fontWeight: '800' },
-  modalActionText: { color: COLORS.muted, fontSize: 12, marginTop: 3 },
-  modalCancelButton: { alignItems: 'center', marginTop: 8, paddingVertical: 12 },
-  renameInput: {
-    backgroundColor: COLORS.background, borderColor: COLORS.accent, borderRadius: 14,
-    borderWidth: 1, color: COLORS.text, fontSize: 16, marginTop: 18,
-    paddingHorizontal: 14, paddingVertical: 13,
-  },
-  modalButtonRow: { flexDirection: 'row', gap: 10, justifyContent: 'flex-end', marginTop: 14 },
-  modalSecondaryButton: {
-    alignItems: 'center', borderColor: COLORS.border, borderRadius: 13,
-    borderWidth: 1, justifyContent: 'center', paddingHorizontal: 16, paddingVertical: 12,
-  },
-  modalSecondaryButtonText: { color: COLORS.text, fontSize: 14, fontWeight: '800' },
-  modalPrimaryButton: {
-    alignItems: 'center', backgroundColor: COLORS.accent, borderRadius: 13,
-    justifyContent: 'center', paddingHorizontal: 17, paddingVertical: 12,
-  },
-  modalDeleteButton: {
-    alignItems: 'center', backgroundColor: COLORS.dangerBackground,
-    borderColor: COLORS.danger, borderRadius: 13, borderWidth: 1,
-    justifyContent: 'center', paddingHorizontal: 17, paddingVertical: 12,
-  },
-  modalDeleteButtonText: { color: COLORS.danger, fontSize: 14, fontWeight: '900' },
   floatingButton: {
     alignSelf: 'center', backgroundColor: COLORS.accent, borderRadius: 24, bottom: 20,
     elevation: 7, paddingHorizontal: 20, paddingVertical: 13, position: 'absolute',
@@ -1418,6 +1452,32 @@ const styles = StyleSheet.create({
   },
   settingArea: { minHeight: 125 },
   plotArea: { minHeight: 160 },
+  subtextArea: { minHeight: 90 },
+  configCover: {
+    alignSelf: 'center', borderColor: '#FFFFFF20', borderRadius: 18,
+    borderWidth: 1, height: 270, justifyContent: 'flex-end', marginTop: 12,
+    overflow: 'hidden', padding: 18, width: 180,
+  },
+  configCoverImage: {
+    bottom: 0, left: 0, position: 'absolute', right: 0, top: 0,
+  },
+  configCoverMark: { color: '#FFE5AC', fontSize: 28, left: 18, position: 'absolute', top: 16 },
+  configCoverTitle: {
+    color: '#FFF9F0', fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    fontSize: 22, fontWeight: '800', lineHeight: 27,
+  },
+  coverButtonRow: { flexDirection: 'row', gap: 10, justifyContent: 'center', marginTop: 12 },
+  coverButton: {
+    borderColor: COLORS.border, borderRadius: 12, borderWidth: 1,
+    paddingHorizontal: 15, paddingVertical: 11,
+  },
+  coverButtonText: { color: COLORS.accent, fontSize: 13, fontWeight: '800' },
+  removeCoverText: { color: COLORS.danger, fontSize: 13, fontWeight: '800' },
+  deleteNovelButton: {
+    alignItems: 'center', borderColor: '#744049', borderRadius: 14, borderWidth: 1,
+    marginTop: 14, paddingHorizontal: 18, paddingVertical: 13,
+  },
+  deleteNovelButtonText: { color: COLORS.danger, fontSize: 14, fontWeight: '900' },
   promptNote: {
     alignItems: 'flex-start', backgroundColor: '#251F2C', borderColor: COLORS.border,
     borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: 11,
